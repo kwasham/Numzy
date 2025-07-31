@@ -69,13 +69,26 @@ async def upload_receipt(
             details = await extraction_service.extract(file_bytes, rec.filename)
             # Run audit
             audit_service = AuditService(session)
-            decision = await audit_service.audit(details, user_id)
-            # Update receipt record
-            rec.extracted_data = details.model_dump()
-            rec.audit_decision = decision.model_dump()
-            rec.status = ReceiptStatus.COMPLETED
-            await session.commit()
-            return
+            # Determine if the user has created a natural-language rule
+            # For illustration, suppose you store the NL description on the receipt record
+            nl_description = rec.nl_rule_description  # or fetch from another table
+            threshold = rec.amount_limit or 50.0
+
+            if nl_description:
+                decision = await audit_service.audit(
+                    details,
+                    user_id,
+                    nl_rule_description=nl_description,
+                    amount_limit=threshold,
+                )
+            else:
+                decision = await audit_service.audit(details, user_id)
+                # Update receipt record
+                rec.extracted_data = details.model_dump()
+                rec.audit_decision = decision.model_dump()
+                rec.status = ReceiptStatus.COMPLETED
+                await session.commit()
+                return
 
     # Schedule the background task
     background_tasks.add_task(process_receipt_task, receipt.id, user.id)

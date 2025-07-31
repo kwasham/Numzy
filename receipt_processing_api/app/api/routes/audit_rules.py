@@ -7,9 +7,11 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_db_session, get_user, get_clerk_user
+from app.api.dependencies import get_db_session, get_user, get_clerk_user, get_audit_service
 from app.models.tables import AuditRule
-from app.models.schemas import AuditRuleCreate, AuditRuleUpdate, AuditRuleRead
+from app.models.schemas import AuditRuleNLCreate, PromptTemplateCreate, AuditRuleCreate, AuditRuleUpdate, AuditRuleRead
+from app.services.audit_service import AuditService 
+from app.services.prompt_templates import prompt_template_repository
 from app.models.enums import RuleType
 
 
@@ -30,6 +32,49 @@ async def list_audit_rules(
     result = await db.execute(query)
     rows = result.fetchall()
     return [AuditRuleRead(**row._mapping) for row in rows]
+
+
+# receipt_processing_api/app/api/routes/audit_rules.py
+
+@router.post("/nl", response_model=AuditRuleRead)
+async def create_nl_audit_rule(
+    rule: AuditRuleNLCreate,
+    service: AuditService = Depends(get_audit_service),
+    db: AsyncSession = Depends(get_db_session),
+    user = Depends(get_user)
+) -> AuditRuleRead:
+    """
+    Accept a natural-language rule description, generate a prompt using the MCP server,
+    and store it as a PromptTemplate.
+    """
+    
+    # Generate instructions from the prompt server
+    instructions = await service._get_audit_instructions(rule.description, rule.threshold)
+
+    # Save instructions as a prompt template; adjust fields as needed
+    saved_prompt = await prompt_template_repository.create(
+        PromptTemplateCreate(
+            name=rule.name,
+            content=instructions,
+            type="audit",
+            owner_id=user.id,
+            organisation_id=None,
+        )
+    )
+
+    # After saving the prompt
+    new_rule = AuditRule(
+        owner_id=user.id,
+        name=rule.name,
+        type=RuleType.LLM,
+        config={"prompt_id": saved_prompt.id, "threshold": rule.threshold},
+        active=True,
+    )
+    db.add(new_rule)
+    await db.commit()
+    await db.refresh(new_rule)
+    return AuditRuleRead(**new_rule.__dict__)
+
 
 
 @router.post("", response_model=AuditRuleRead, status_code=status.HTTP_201_CREATED)

@@ -159,6 +159,14 @@ class AuditRuleBase(BaseModel):
 class AuditRuleCreate(AuditRuleBase):
     pass
 
+class AuditRuleNLCreate(BaseModel):
+    """
+    Schema for creating an LLM-based audit rule from a natural-language description.
+    """
+    name: str               # e.g. "High Weekend Receipts"
+    description: str        # Natural-language rule text
+    threshold: float = 50.0 # Optional amount limit or other parameter
+
 
 class AuditRuleUpdate(BaseModel):
     name: Optional[str] = None

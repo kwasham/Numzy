@@ -33,12 +33,19 @@ from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from agents import Agent, Runner, set_default_openai_api
 
+import httpx
+from agents import Agent, Runner
+from agents.mcp import MCPServerStreamableHttp
+from agents.model_settings import ModelSettings
+
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.schemas import ReceiptDetails, AuditDecision
 from app.models.tables import AuditRule
 from app.services.rule_engine import evaluate_rules
 from app.utils.prompts import get_default_audit_prompt, get_audit_examples_string
+from app.models.enums import RuleType
+from app.services.prompt_templates import prompt_template_repository
 
 
 logger = logging.getLogger(__name__)
@@ -66,8 +73,38 @@ class AuditService:
         result = await self.db.execute(query)
         rows = result.fetchall()
         return [AuditRule(**row._mapping) for row in rows]
+    
+    
+    async def _get_audit_instructions(self, rule_description: str, threshold: float) -> str:
+        """
+        Fetch audit instructions from the local MCP prompt server.
+        """
+        mcp_url = os.getenv("MCP_URL", "http://mcp:8000")
+        
+        try:
+            async with MCPServerStreamableHttp(
+                params={"url": mcp_url}
+            ) as server:
+                logger.info("MCP connection established")
+                # Use call_prompt instead of get_prompt
+                prompt_result = await server.call_prompt(
+                    "generate_audit_instructions",
+                    rule_description=rule_description,
+                    amount_limit=threshold
+                )
+                logger.info("Prompt result received")
+                return prompt_result.content
+        except Exception as e:
+            logger.error(f"MCP connection failed: {str(e)}")
+            raise
 
-    async def audit(self, details: ReceiptDetails, user_id: int, organisation_id: Optional[int] = None) -> AuditDecision:
+    async def audit(
+        self,
+        details: ReceiptDetails,
+        user_id: int,
+        organisation_id: Optional[int] = None,
+        
+    ) -> AuditDecision:
         """Evaluate a receipt using deterministic rules and optionally an LLM.
 
         :param details: Structured receipt details
@@ -87,49 +124,34 @@ class AuditService:
             }
             for rule in rules
         ]
-        # Evaluate deterministic rules
+        # First, evaluate deterministic rules as before...
         flags, reasons, needs_audit = evaluate_rules(details, rule_dicts)
-        # Build reasoning string
         reasoning = "\n".join(reasons)
-        # Map flags onto the static audit fields. Unknown rules map to False.
-        # Standard rule names expected by downstream consumers
-        not_travel = flags.get("not_travel_related", False)
-        over_limit = flags.get("amount_over_limit", False)
-        math_error = flags.get("math_error", False)
-        handwritten_x = flags.get("handwritten_x", False)
-        # If there are no configured rules use the default audit agent
-        if not rule_dicts:
-            # Build default audit prompt with examples
-            prompt = get_default_audit_prompt().format(examples=get_audit_examples_string())
-            agent = Agent(
-                name="receipt_audit_agent_default",
-                instructions=prompt,
-                model=self.model,
-                output_type=AuditDecision,
-            )
-            # Use the receipt details as JSON input
-            input_message = f"Audit this receipt data:\n\n{details.model_dump_json(indent=2)}"
-            try:
-                result = await Runner.run(agent, input_message)
-                decision: AuditDecision = result.final_output
-                return decision
-            except Exception as exc:
-                logger.error(f"Audit agent failed: {exc}")
-                return AuditDecision(
-                    not_travel_related=False,
-                    amount_over_limit=False,
-                    math_error=False,
-                    handwritten_x=False,
-                    reasoning=f"Audit agent error: {exc}",
-                    needs_audit=True,
+        
+        # Check for any LLM-based rules
+        for rule in rules:
+            if rule.type == RuleType.LLM:
+                prompt_id = rule.config.get("prompt_id")
+                threshold = float(rule.config.get("threshold", 50.0))
+                # Retrieve the prompt template from the DB
+                prompt_record = await prompt_template_repository.get(prompt_id)
+                instructions = prompt_record.content
+                agent = Agent(
+                    name="dynamic_audit_agent",
+                    instructions=instructions,
+                    model_settings=ModelSettings(tool_choice="auto"),
+                    output_type=AuditDecision,
                 )
-        # Otherwise combine deterministic flags into the decision object
-        decision = AuditDecision(
-            not_travel_related=not_travel,
-            amount_over_limit=over_limit,
-            math_error=math_error,
-            handwritten_x=handwritten_x,
+                input_message = f"Audit this receipt:\\n{details.model_dump_json(indent=2)}"
+                result = await Runner.run(starting_agent=agent, input=input_message)
+                return result.final_output
+
+        # ...if no LLM rules, return deterministic result
+        return AuditDecision(
+            not_travel_related=flags.get("not_travel_related", False),
+            amount_over_limit=flags.get("amount_over_limit", False),
+            math_error=flags.get("math_error", False),
+            handwritten_x=flags.get("handwritten_x", False),
             reasoning=reasoning,
             needs_audit=needs_audit,
         )
-        return decision

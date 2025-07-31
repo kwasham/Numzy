@@ -2,23 +2,39 @@
 """Common dependencies for FastAPI routes."""
 
 from __future__ import annotations
-
+import requests
 from typing import AsyncGenerator, List, Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, status, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.audit_service import AuditService
 
+from jose import jwt, JWTError
+from typing import Dict
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.tables import User
-from app.models.enums import PlanType
-import datetime
+
+
+
+# Clerk public JWKS endpoint
+CLERK_JWKS_URL = "https://clerk.dev/.well-known/jwks.json"
 
 
 async def get_db_session() -> AsyncGenerator:
     """Alias for ``get_db`` to be imported in routers."""
     async for session in get_db():
         yield session
+        
+
+async def get_audit_service(
+    db: AsyncSession = Depends(get_db_session),
+) -> AuditService:
+    """
+    Dependency that returns an AuditService bound to the current DB session.
+    """
+    return AuditService(db)
 
 
 async def get_user(current_user: User = Depends(get_current_user)) -> User:
@@ -63,13 +79,8 @@ def require_owner_or_admin(payload, resource_owner_clerk_id: str):
     roles = payload.get("roles", [])
     if clerk_id != resource_owner_clerk_id and "admin" not in roles:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-import requests
-from fastapi import Depends, HTTPException, status, Request
-from jose import jwt, JWTError
-from typing import Dict
 
-# Clerk public JWKS endpoint
-CLERK_JWKS_URL = "https://clerk.dev/.well-known/jwks.json"
+
 
 def get_clerk_public_keys() -> Dict:
     resp = requests.get(CLERK_JWKS_URL)

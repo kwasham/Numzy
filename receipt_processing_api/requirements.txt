@@ -12,3 +12,6 @@ stripe
 python-multipart
 alembic
 openai
+openai-agents
+asyncpg
+python-jose

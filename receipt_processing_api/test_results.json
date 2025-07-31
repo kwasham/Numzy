@@ -1,0 +1,90 @@
+{
+  "test_run": "2025-07-29T19:42:41.490345",
+  "results": {
+    "basic": {
+      "merchant": "STARBUCKS COFFEE",
+      "location": {
+        "city": "San Francisco",
+        "state": "CA",
+        "zipcode": null
+      },
+      "time": "2025-07-29T00:00:00Z",
+      "items": [
+        {
+          "description": "Caffe Latte",
+          "product_code": null,
+          "category": null,
+          "item_price": "$5.25",
+          "sale_price": null,
+          "quantity": null,
+          "total": null
+        },
+        {
+          "description": "Croissant",
+          "product_code": null,
+          "category": null,
+          "item_price": "$3.50",
+          "sale_price": null,
+          "quantity": null,
+          "total": null
+        },
+        {
+          "description": "Orange Juice",
+          "product_code": null,
+          "category": null,
+          "item_price": "$4.00",
+          "sale_price": null,
+          "quantity": null,
+          "total": null
+        }
+      ],
+      "subtotal": "$12.75",
+      "tax": "$1.02",
+      "total": "$13.77",
+      "handwritten_notes": []
+    },
+    "custom_prompt": {
+      "merchant": "STARBUCKS COFFEE",
+      "location": {
+        "city": "San Francisco",
+        "state": "CA",
+        "zipcode": null
+      },
+      "time": "2025-07-29",
+      "items": [
+        {
+          "description": "Caffe Latte",
+          "product_code": null,
+          "category": null,
+          "item_price": "$5.25",
+          "sale_price": null,
+          "quantity": null,
+          "total": "$5.25"
+        },
+        {
+          "description": "Croissant",
+          "product_code": null,
+          "category": null,
+          "item_price": "$3.50",
+          "sale_price": null,
+          "quantity": null,
+          "total": "$3.50"
+        },
+        {
+          "description": "Orange Juice",
+          "product_code": null,
+          "category": null,
+          "item_price": "$4.00",
+          "sale_price": null,
+          "quantity": null,
+          "total": "$4.00"
+        }
+      ],
+      "subtotal": "$12.75",
+      "tax": "$1.02",
+      "total": "$13.77",
+      "handwritten_notes": []
+    },
+    "pdf": "None"
+  }
+}
