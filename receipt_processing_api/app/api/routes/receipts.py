@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session, get_user, get_clerk_user
@@ -17,6 +17,7 @@ from app.services.storage_service import StorageService
 from app.services.extraction_service import ExtractionService
 from app.services.audit_service import AuditService
 from app.services.billing_service import BillingService
+from app.core.tasks import extract_and_audit_receipt
 
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
@@ -24,7 +25,6 @@ router = APIRouter(prefix="/receipts", tags=["receipts"])
 
 @router.post("", response_model=ReceiptRead, status_code=status.HTTP_201_CREATED)
 async def upload_receipt(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_clerk_user),
@@ -52,46 +52,9 @@ async def upload_receipt(
     await db.commit()
     await db.refresh(receipt)
 
-    async def process_receipt_task(receipt_id: int, user_id: int) -> None:
-        """Background task to run extraction and audit services."""
-        # Use a new session inside the background task
-        async for session in get_db_session():
-            # Load the receipt again to avoid stale instance errors
-            rec = await session.get(Receipt, receipt_id)
-            if not rec:
-                return
-            rec.status = ReceiptStatus.PROCESSING
-            await session.commit()
-            # Load file data
-            storage_inner = StorageService()
-            file_bytes = storage_inner.get_full_path(rec.file_path).read_bytes()
-            extraction_service = ExtractionService()
-            details = await extraction_service.extract(file_bytes, rec.filename)
-            # Run audit
-            audit_service = AuditService(session)
-            # Determine if the user has created a natural-language rule
-            # For illustration, suppose you store the NL description on the receipt record
-            nl_description = rec.nl_rule_description  # or fetch from another table
-            threshold = rec.amount_limit or 50.0
 
-            if nl_description:
-                decision = await audit_service.audit(
-                    details,
-                    user_id,
-                    nl_rule_description=nl_description,
-                    amount_limit=threshold,
-                )
-            else:
-                decision = await audit_service.audit(details, user_id)
-                # Update receipt record
-                rec.extracted_data = details.model_dump()
-                rec.audit_decision = decision.model_dump()
-                rec.status = ReceiptStatus.COMPLETED
-                await session.commit()
-                return
-
-    # Schedule the background task
-    background_tasks.add_task(process_receipt_task, receipt.id, user.id)
+    # Enqueue Dramatiq background task
+    extract_and_audit_receipt.send(receipt.id, user.id)
     return ReceiptRead.from_orm(receipt)
 
 

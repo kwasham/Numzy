@@ -18,15 +18,17 @@ should be replaced with real authentication in production.
 
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.models.tables import User, PlanType
 from datetime import datetime
 from app.models.enums import PlanType
+from app.core.config import settings
 
 import os
 import httpx
@@ -50,31 +52,34 @@ auth_scheme = HTTPBearer()
 
 
 async def get_current_user(
-    credentials=Depends(auth_scheme),
     db: AsyncSession = Depends(get_db),
+    request: Request = None
 ) -> User:
-    """Validate Clerk JWT, fetch Clerk user, and ensure user exists in Neon DB."""
-    # DEV AUTH BYPASS: If enabled, ensure a dev user exists in the DB and return it
-    if os.getenv("DEV_AUTH_BYPASS", "false").lower() == "true":
-        dev_email = "dev@example.com"
-        result = await db.execute(User.__table__.select().where(User.email == dev_email))
-        row = result.first()
-        if row:
-            user = User(**row._mapping)
-            return user
-        # Create the dev user if not present
-        new_user = User(
-            email=dev_email,
-            name="Dev User",
-            plan=PlanType.FREE,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-        return new_user
+    """Get current user from JWT or create dev user in dev mode."""
     
+    if settings.DEV_AUTH_BYPASS:
+        # Check if dev user exists
+        result = await db.execute(
+            select(User).where(User.email == "dev@example.com")
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            # Create dev user with a dummy clerk_id
+            user = User(
+                clerk_id="dev_clerk_id_12345",  # Add a non-null clerk_id
+                email="dev@example.com",
+                name="Dev User",
+                plan=PlanType.FREE
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        
+        return user
+    
+
+    credentials = auth_scheme(request)
 
     token = credentials.credentials
 

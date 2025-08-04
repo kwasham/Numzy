@@ -6,7 +6,7 @@ from app.models.tables import PromptTemplate
 from app.models.schemas import PromptTemplateCreate
 
 class PromptTemplateRepository:
-    async def create(self, template: PromptTemplateCreate, db: AsyncSession) -> PromptTemplate:
+    async def create(self, db: AsyncSession, template: PromptTemplateCreate) -> PromptTemplate:
         """Create and persist a new PromptTemplate."""
         new_prompt = PromptTemplate(
             name=template.name,

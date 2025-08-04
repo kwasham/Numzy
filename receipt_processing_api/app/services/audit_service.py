@@ -75,28 +75,24 @@ class AuditService:
         return [AuditRule(**row._mapping) for row in rows]
     
     
-    async def _get_audit_instructions(self, rule_description: str, threshold: float) -> str:
-        """
-        Fetch audit instructions from the local MCP prompt server.
-        """
-        mcp_url = os.getenv("MCP_URL", "http://mcp:8000")
+    async def _get_audit_instructions(self, rule_description: str, amount_limit: float) -> str:
+        """Call the local MCP server to get audit instructions using streamable HTTP."""
+        # Get MCP URL from environment or use default
+        mcp_url = os.getenv("MCP_URL", "http://mcp_server:8000")
         
-        try:
-            async with MCPServerStreamableHttp(
-                params={"url": mcp_url}
-            ) as server:
-                logger.info("MCP connection established")
-                # Use call_prompt instead of get_prompt
-                prompt_result = await server.call_prompt(
-                    "generate_audit_instructions",
-                    rule_description=rule_description,
-                    amount_limit=threshold
-                )
-                logger.info("Prompt result received")
-                return prompt_result.content
-        except Exception as e:
-            logger.error(f"MCP connection failed: {str(e)}")
-            raise
+        async with MCPServerStreamableHttp(
+            name="receipt-audit-mcp",
+            params={"url": f"{mcp_url}/mcp"}  # Add /mcp endpoint
+        ) as mcp_client:
+            prompt_result = await mcp_client.get_prompt(
+                "generate_audit_instructions",
+                {
+                    "rule_description": rule_description, 
+                    "amount_limit": str(amount_limit)  # Convert float to string
+                },
+            )
+            # The result contains TextContent objects, extract the text
+            return prompt_result.messages[0].content.text
 
     async def audit(
         self,

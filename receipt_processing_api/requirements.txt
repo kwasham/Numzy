@@ -5,7 +5,7 @@ aiosqlite
 psycopg2-binary
 pydantic
 python-dotenv
-celery[redis]
+dramatiq[redis]
 redis
 minio
 stripe
@@ -15,3 +15,4 @@ openai
 openai-agents
 asyncpg
 python-jose
+dramatiq[redis]

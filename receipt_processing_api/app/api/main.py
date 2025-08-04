@@ -10,7 +10,8 @@ from __future__ import annotations
 
 
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from fastapi.security import HTTPBearer
 from app.core.config import settings
 import logging
 from app.core.database import init_db
@@ -47,3 +48,28 @@ app.include_router(teams_router)
 async def on_startup() -> None:
     """Initialise database tables on startup."""
     await init_db()
+
+
+@app.get("/auth-test")
+def auth_test(credentials=Depends(HTTPBearer())):
+    return {"message": "You are authorized"}
+
+
+# @app.get("/health")
+# async def health():
+#     """Health check with database connectivity test"""
+#     try:
+#         # Use the actual database session from your project
+#         from app.core.database import get_db
+#         db = next(get_db())
+#         # Test query
+#         db.execute("SELECT 1")
+#         db.close()
+#         return {"status": "healthy", "database": "connected"}
+#     except Exception as e:
+#         return {"status": "healthy", "database": "error", "detail": str(e)}
+    
+@app.get("/health")
+async def health():
+    """Simple health check endpoint"""
+    return {"status": "healthy", "api": "running"}

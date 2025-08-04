@@ -1,4 +1,3 @@
-
 """Common dependencies for FastAPI routes."""
 
 from __future__ import annotations
@@ -11,10 +10,12 @@ from app.services.audit_service import AuditService
 
 from jose import jwt, JWTError
 from typing import Dict
+from types import SimpleNamespace
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.tables import User
+from app.core.config import settings
 
 
 
@@ -31,10 +32,8 @@ async def get_db_session() -> AsyncGenerator:
 async def get_audit_service(
     db: AsyncSession = Depends(get_db_session),
 ) -> AuditService:
-    """
-    Dependency that returns an AuditService bound to the current DB session.
-    """
-    return AuditService(db)
+    """Get audit service instance."""
+    return AuditService()  # Don't pass db to constructor
 
 
 async def get_user(current_user: User = Depends(get_current_user)) -> User:
@@ -87,7 +86,17 @@ def get_clerk_public_keys() -> Dict:
     resp.raise_for_status()
     return resp.json()
 
-def get_clerk_user(request: Request) -> Dict:
+def get_clerk_user(request: Request):
+    # Check if we're in dev mode with auth bypass
+    if settings.DEV_AUTH_BYPASS:
+        # Return an object with attributes instead of a dict
+        return SimpleNamespace(
+            id=1,  # Use numeric ID for database
+            sub="user_dev123", 
+            email="dev@example.com",
+            name="Dev User"
+        )
+    
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Clerk JWT")

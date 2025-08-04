@@ -1,68 +1,42 @@
-version: '3.8'
 services:
-  app:
+  numzy_api:
     build: .
-    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "python -c 'import asyncio; from app.core.database import init_db; asyncio.run(init_db())' && uvicorn app.api.main:app --host 0.0.0.0 --port 8001 --reload"
+    working_dir: /app
     volumes:
-      - .:/code
+      - .:/app
+    ports:
+      - "8010:8001"
     env_file:
       - .env
+    environment:
+      - DEV_AUTH_BYPASS=true
+      - DRAMATIQ_BROKER_URL=redis://redis:6379/0
     depends_on:
-      - db
-      - redis
-      - minio
-      - mcp  # Add MCP as dependency
+      mcp_server:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  mcp_server:
+    build:
+      context: .
+    command: python app/mcp/prompt_server.py
     ports:
       - "8000:8000"
-    networks:
-      - app-network
-
-  worker:
-    build: .
-    command: celery -A app.core.tasks worker --loglevel=info
-    volumes:
-      - .:/code
-    env_file:
-      - .env
-    depends_on:
-      - db
-      - redis
-      - minio
-  db:
-    image: postgres:16
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: receipts
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      - DEV_AUTH_BYPASS=true
+
   redis:
     image: redis:7
     ports:
       - "6379:6379"
-  mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: python app/mcp/prompt_server.py  # Fix: Use prompt_server.py not server.py
-    ports:
-      - "8001:8000"
-    env_file:
-      - .env
-    depends_on:
-      - db
-    networks:
-      - app-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+
   minio:
     image: minio/minio
-    command: server /data
+    command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -70,10 +44,29 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
-      - minio-data:/data
+      - minio_data:/data
+
+  dramatiq_worker:
+    build: .
+    command: sh -c "sleep 10 && dramatiq app.core.tasks --processes 1 --threads 4"
+    working_dir: /app
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - DRAMATIQ_BROKER_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - DEV_AUTH_BYPASS=true
+    depends_on:
+      numzy_api:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+
 volumes:
-  pgdata:
-  minio-data:
-networks:
-  app-network:
-    driver: bridge
+  minio_data:

@@ -21,28 +21,34 @@ from pathlib import Path
 from typing import Optional
 
 
+
 class Settings:
     """Container for configuration values."""
 
     def __init__(self) -> None:
+        # Dramatiq/Redis configuration
+        self.DRAMATIQ_BROKER_URL = os.getenv("DRAMATIQ_BROKER_URL", "redis://localhost:6379/0")
+
         # Basic application metadata
-        self.APP_NAME: str = os.getenv("APP_NAME", "Receipt Processing API")
-        self.ENV: str = os.getenv("ENV", "development")
+        self.APP_NAME = os.getenv("APP_NAME", "Receipt Processing API")
+        self.ENV = os.getenv("ENV", "development")
 
         # Database configuration; use env var
-        self.DATABASE_URL: str = os.getenv("DATABASE_URL")
+        self.DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@db/numzy")
 
         # API keys
-        self.OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
         # Storage directory
         default_storage = Path(__file__).resolve().parent.parent.parent / "storage"
-        self.STORAGE_DIRECTORY: str = os.getenv("STORAGE_DIRECTORY", str(default_storage))
+        self.STORAGE_DIRECTORY = os.getenv("STORAGE_DIRECTORY", str(default_storage))
+
+        self.DEV_AUTH_BYPASS = os.getenv("DEV_AUTH_BYPASS", "false").lower() == "true"
 
         # Billing and secret keys
-        self.STRIPE_API_KEY: Optional[str] = os.getenv("STRIPE_API_KEY")
-        self.SECRET_KEY: str = os.getenv("SECRET_KEY", "changeme")
-        self.ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))  # one week
+        self.STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
+        self.SECRET_KEY = os.getenv("SECRET_KEY", "changeme")
+        self.ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))  # one week
 
 
 settings = Settings()
