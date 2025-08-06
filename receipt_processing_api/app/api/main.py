@@ -22,6 +22,7 @@ from app.api.routes.evaluations import router as evaluations_router
 from app.api.routes.cost_analysis import router as cost_analysis_router
 from app.api.routes.users import router as users_router
 from app.api.routes.teams import router as teams_router
+from app.api.routes.jobs import router as jobs_router
 from fastapi.exception_handlers import RequestValidationError
 from app.api.error_handlers import validation_exception_handler, generic_exception_handler
 
@@ -42,6 +43,7 @@ app.include_router(evaluations_router)
 app.include_router(cost_analysis_router)
 app.include_router(users_router)
 app.include_router(teams_router)
+app.include_router(jobs_router)
 
 
 @app.on_event("startup")

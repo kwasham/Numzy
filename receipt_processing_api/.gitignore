@@ -23,3 +23,6 @@ migrations/versions/__pycache__/
 # Storage
 receipt_processing_api/storage/
 storage/
+.DS_Store
+*.pyc
+__pycache__/

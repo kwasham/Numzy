@@ -1,5 +1,3 @@
-
-
 """Pydantic schemas for request and response models.
 
 Pydantic models are used for validating and serialising data that
@@ -21,6 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from enum import Enum
 
 from pydantic import BaseModel, Field, validator
 
@@ -140,6 +139,9 @@ class ReceiptRead(BaseModel):
     audit_decision: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
+    task_id: Optional[str] = None
+    processing_duration_ms: Optional[int] = None
+    job_id: Optional[str] = None  # Add this field
 
     class Config:
         from_attributes = True
@@ -266,3 +268,65 @@ class ReceiptUpdate(BaseModel):
 class EvaluationUpdate(BaseModel):
     name: Optional[str] = None
     notes: Optional[str] = None
+
+
+class ReceiptResponse(BaseModel):
+    id: int
+    filename: str
+    status: ReceiptStatus
+    extracted_data: Optional[Dict[str, Any]] = None
+    audit_decision: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    # Task tracking
+    task_id: Optional[str] = None
+    task_started_at: Optional[datetime] = None
+    task_completed_at: Optional[datetime] = None
+    task_error: Optional[str] = None
+    task_retry_count: int = 0
+    processing_duration_ms: Optional[int] = None
+    extraction_progress: int = 0
+    audit_progress: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+# Add these new schemas
+
+class JobResponse(BaseModel):
+    """Background job status response."""
+    id: str
+    job_type: str
+    status: str
+    progress: int
+    payload: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    receipt_id: Optional[int] = None
+    
+    class Config:
+        from_attributes = True
+
+class JobStatus(str, Enum):
+    """Job status enumeration."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+# Add the AuditRead schema (add after ReceiptRead)
+
+class AuditRead(BaseModel):
+    """Audit decision read model."""
+    receipt_id: int
+    decision: Dict[str, Any]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True

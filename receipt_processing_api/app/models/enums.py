@@ -41,7 +41,7 @@ class ReceiptStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
-    ERROR = "error"
+    FAILED = "failed"
 
 
 class EvaluationStatus(str, Enum):

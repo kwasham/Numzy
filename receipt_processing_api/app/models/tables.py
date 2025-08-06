@@ -27,6 +27,7 @@ from sqlalchemy import (
     Table,
     Text,
     JSON,
+    func,
 )
 from sqlalchemy.orm import relationship
 
@@ -52,6 +53,7 @@ class User(Base):
     audit_rules = relationship("AuditRule", back_populates="owner")
     prompt_templates = relationship("PromptTemplate", back_populates="owner")
     evaluations = relationship("Evaluation", back_populates="owner")
+    background_jobs = relationship("BackgroundJob", back_populates="user", cascade="all, delete-orphan")
 
 
 class Organisation(Base):
@@ -99,8 +101,21 @@ class Receipt(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
 
+    # Add task tracking fields
+    task_id = Column(String, nullable=True, index=True)  # Dramatiq message ID
+    task_started_at = Column(DateTime(timezone=True), nullable=True)
+    task_completed_at = Column(DateTime(timezone=True), nullable=True)
+    task_error = Column(Text, nullable=True)
+    task_retry_count = Column(Integer, default=0)
+    processing_duration_ms = Column(Integer, nullable=True)
+
+    # Add progress tracking
+    extraction_progress = Column(Integer, default=0)  # 0-100
+    audit_progress = Column(Integer, default=0)  # 0-100
+
     owner = relationship("User", back_populates="receipts")
     organisation = relationship("Organisation", back_populates="receipts")
+    background_job = relationship("BackgroundJob", back_populates="receipt", uselist=False)
 
 
 class AuditRule(Base):
@@ -191,3 +206,30 @@ class CostAnalysis(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
 
     evaluation = relationship("Evaluation", back_populates="cost_analyses")
+
+
+class BackgroundJob(Base):
+    """Track background job status and progress."""
+    __tablename__ = "background_jobs"
+    
+    id = Column(String, primary_key=True)  # Dramatiq message ID
+    job_type = Column(String, nullable=False)  # e.g., "receipt_extraction"
+    status = Column(String, nullable=False, default="pending")  # pending, running, completed, failed
+    progress = Column(Integer, default=0)  # 0-100
+    
+    # Job metadata
+    payload = Column(JSON)  # Store job arguments
+    result = Column(JSON)  # Store job results
+    error = Column(Text)  # Error message if failed
+    
+    # Timing
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    
+    # Relationships
+    user_id = Column(Integer, ForeignKey("users.id"))
+    receipt_id = Column(Integer, ForeignKey("receipts.id"))
+    
+    user = relationship("User", back_populates="background_jobs")
+    receipt = relationship("Receipt", back_populates="background_job")

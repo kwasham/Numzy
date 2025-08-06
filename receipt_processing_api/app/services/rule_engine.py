@@ -36,7 +36,7 @@ audit decision. A receipt requires auditing if any rule flag is
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.enums import RuleType
 from app.models.schemas import ReceiptDetails, LineItem
@@ -57,14 +57,11 @@ def _parse_amount(value: str | None) -> float:
         return 0.0
 
 
-def _get_field_value(details: ReceiptDetails, field: str) -> float:
-    """Retrieve a numeric field from the receipt details.
+def _get_field_value(details: ReceiptDetails, field: Optional[str]) -> Any:
+    """Extract a field value from receipt details."""
+    if field is None:
+        return 0.0  # Return 0 for None field instead of None
 
-    Supports nested fields (e.g. ``items.total`` will return the sum
-    of all item totals) and top level fields like ``total`` or
-    ``subtotal``. If the field cannot be found the function returns
-    0.0.
-    """
     if field.startswith("items."):
         _, subfield = field.split(".", 1)
         total = 0.0
@@ -78,20 +75,15 @@ def _get_field_value(details: ReceiptDetails, field: str) -> float:
 
 
 def _evaluate_threshold(details: ReceiptDetails, config: Dict[str, Any]) -> Tuple[bool, str]:
-    """Evaluate a threshold rule.
-
-    The config should include ``field``, ``op`` and ``value`` keys.
-    ``field`` may refer to ``total``, ``subtotal`` or ``items.total``.
-    ``op`` may be one of ``>``, ``>=``, ``<``, ``<=``, ``==``. ``value``
-    should be a number. Example:
-
-    ```json
-    {"field": "total", "op": ">", "value": 50}
-    ```
-    """
+    """Evaluate a threshold rule."""
     field = config.get("field")
     op = config.get("op")
-    value = config.get("value")
+    value = config.get("value", 0)
+    
+    # Handle missing field
+    if field is None:
+        return False, "missing field in threshold rule config"
+    
     amount = _get_field_value(details, field)
     if op == ">":
         triggered = amount > value
