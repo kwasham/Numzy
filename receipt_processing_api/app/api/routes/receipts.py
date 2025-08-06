@@ -1,60 +1,73 @@
-
 """API routes for receipt upload and retrieval."""
 
 from __future__ import annotations
 
-import asyncio
-from typing import List
+import os
+from typing import List, Dict, Any
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from pydantic import BaseModel
 
-from app.api.dependencies import get_db_session, get_user, get_clerk_user
-from app.core.security import get_current_user
+from app.api.dependencies import get_clerk_user, get_db_session, get_user
+from app.models.enums import ReceiptStatus
 from app.models.schemas import ReceiptRead, ReceiptUpdate
-from app.models.tables import Receipt, ReceiptStatus, User
-from app.services.storage_service import StorageService
-from app.services.extraction_service import ExtractionService
-from app.services.audit_service import AuditService
+from app.models.tables import Receipt, BackgroundJob, User
 from app.services.billing_service import BillingService
+from app.services.storage_service import StorageService
 from app.core.tasks import extract_and_audit_receipt
-
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
 
-@router.post("", response_model=ReceiptRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ReceiptRead)
 async def upload_receipt(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_clerk_user),
+    user = Depends(get_user),
 ) -> ReceiptRead:
-    """Upload a new receipt image.
-
-    Stores the file, creates a database record and schedules
-    extraction and audit tasks. Returns the receipt metadata with
-    status set to pending.
-    """
-    # Enforce monthly quota via the billing service
-    billing = BillingService()
-    # In a real implementation we would record usage and check quotas
-    # Here we simply proceed
+    """Upload a new receipt for processing."""
+    # Check file type
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    
+    # Check file size (10MB limit)
+    file_size = 0
+    contents = await file.read()
+    file_size = len(contents)
+    if file_size > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB")
+    
+    # Reset file position after reading
+    file.file.seek(0)
+    
+    # Save file to storage
     storage = StorageService()
-    relative_path, original_filename = await storage.save_upload(file, user.id)
+    file_path, original_filename = await storage.save_upload(file, user.id)
+    
+    # Create receipt record
     receipt = Receipt(
         owner_id=user.id,
-        organisation_id=None,
-        file_path=relative_path,
+        file_path=file_path,
         filename=original_filename,
         status=ReceiptStatus.PENDING,
     )
+    
     db.add(receipt)
     await db.commit()
     await db.refresh(receipt)
-
-
-    # Enqueue Dramatiq background task
-    extract_and_audit_receipt.send(receipt.id, user.id)
+    
+    # Queue background task for processing with user_id
+    task_message = extract_and_audit_receipt.send(receipt.id, user.id)
+    
+    # Update receipt with task ID
+    receipt.task_id = task_message.message_id
+    db.add(receipt)
+    await db.commit()
+    await db.refresh(receipt)
+    
     return ReceiptRead.from_orm(receipt)
 
 
@@ -64,10 +77,10 @@ async def list_receipts(
     user = Depends(get_user),
 ) -> List[ReceiptRead]:
     """List all receipts for the current user."""
-    query = Receipt.__table__.select().where(Receipt.owner_id == user.id)
+    query = select(Receipt).where(Receipt.owner_id == user.id)
     result = await db.execute(query)
-    rows = result.fetchall()
-    return [ReceiptRead.from_orm(Receipt(**row._mapping)) for row in rows]
+    receipts = result.scalars().all()
+    return receipts
 
 
 @router.get("/{receipt_id}", response_model=ReceiptRead)
@@ -76,69 +89,85 @@ async def get_receipt(
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_user),
 ) -> ReceiptRead:
-    """Retrieve a specific receipt by ID."""
-    receipt = await db.get(Receipt, receipt_id)
-    if not receipt or receipt.owner_id != user.id:
+    """Get a specific receipt by ID."""
+    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
+    result = await db.execute(query)
+    receipt = result.scalar_one_or_none()
+    if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    return ReceiptRead.from_orm(receipt)
+    return receipt
 
 
-@router.get("/{receipt_id}/audit", response_model=ReceiptRead)
-async def get_receipt_audit(
-    receipt_id: int,
-    db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
-) -> ReceiptRead:
-    """Return the audit decision for a receipt."""
-    receipt = await db.get(Receipt, receipt_id)
-    if not receipt or receipt.owner_id != user.id:
-        raise HTTPException(status_code=404, detail="Receipt not found")
-    if receipt.status != ReceiptStatus.COMPLETED:
-        raise HTTPException(status_code=400, detail="Receipt not yet processed")
-    return ReceiptRead.from_orm(receipt)
-
-
-
-# --- CRUD update and delete endpoints ---
-
-@router.put("/{receipt_id}", response_model=ReceiptRead)
+@router.patch("/{receipt_id}", response_model=ReceiptRead)
 async def update_receipt(
     receipt_id: int,
-    update: ReceiptUpdate,
+    update_data: ReceiptUpdate,
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_user),
 ) -> ReceiptRead:
-    """Update a receipt (filename, status, extracted_data, audit_decision)."""
-    receipt = await db.get(Receipt, receipt_id)
-    if not receipt or receipt.owner_id != user.id:
+    """Update a receipt's extracted data or audit decision."""
+    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
+    result = await db.execute(query)
+    receipt = result.scalar_one_or_none()
+    if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    update_data = update.dict(exclude_unset=True)
-    from datetime import datetime, timezone
-    for field, value in update_data.items():
-        if value is not None:
-            if field == "updated_at" and isinstance(value, datetime) and value.tzinfo is not None:
-                value = value.astimezone(timezone.utc).replace(tzinfo=None)
-            setattr(receipt, field, value)
+    
+    # Apply updates
+    update_dict = update_data.dict(exclude_unset=True)
+    for field, value in update_dict.items():
+        setattr(receipt, field, value)
+    
     await db.commit()
     await db.refresh(receipt)
-    return ReceiptRead.from_orm(receipt)
+    return receipt
+
 
 @router.delete("/{receipt_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_receipt(
     receipt_id: int,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_clerk_user),
-):
-    """Delete a receipt by ID."""
-    receipt = await db.get(Receipt, receipt_id)
+    user = Depends(get_user),
+):  # Remove the return type annotation
+    """Delete a receipt."""
+    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
+    result = await db.execute(query)
+    receipt = result.scalar_one_or_none()
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    # Get owner's clerk_id
-    owner = await db.get(User, receipt.owner_id)
-    if not owner:
-        raise HTTPException(status_code=404, detail="Owner not found")
-    from app.api.dependencies import require_owner_or_admin
-    require_owner_or_admin(user, owner.clerk_id)
+    
     await db.delete(receipt)
     await db.commit()
-    return None
+    # Don't return anything for 204 status
+
+
+# For the audit endpoint, create a simple response model inline
+
+class AuditResponse(BaseModel):
+    """Audit decision response."""
+    receipt_id: int
+    decision: Dict[str, Any]
+    created_at: datetime
+
+
+@router.get("/{receipt_id}/audit", response_model=AuditResponse)
+async def get_audit_decision(
+    receipt_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    user = Depends(get_user),
+) -> AuditResponse:
+    """Get the audit decision for a receipt."""
+    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
+    result = await db.execute(query)
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    
+    if not receipt.audit_decision:
+        raise HTTPException(status_code=404, detail="No audit decision available yet")
+    
+    return AuditResponse(
+        receipt_id=receipt.id,
+        decision=receipt.audit_decision,
+        created_at=receipt.updated_at or receipt.created_at
+    )
+
