@@ -21,140 +21,196 @@ can override it via the ``DRAMATIQ_BROKER_URL`` environment variable.
 from __future__ import annotations
 
 import os
-import asyncio
+import time
+from datetime import datetime
 from typing import Optional
 
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
+from dramatiq.middleware import AgeLimit, TimeLimit, ShutdownNotifications, Retries
+from dramatiq.results import Results
+from dramatiq.results.backends import RedisBackend
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
-from app.models.tables import Receipt, ReceiptStatus, Evaluation, EvaluationStatus
+from app.models.tables import Receipt, BackgroundJob, Evaluation
+from app.models.enums import ReceiptStatus, EvaluationStatus
 from app.services.extraction_service import ExtractionService
-from app.services.audit_service import AuditService
-from app.services.storage_service import StorageService
+from app.services.storage_service import load_file_from_storage
 
-# Configure Dramatiq
-broker = RedisBroker(url=settings.DRAMATIQ_BROKER_URL)
-dramatiq.set_broker(broker)
+# Update the broker configuration to be more explicit
 
-# Create synchronous engine for worker processes
-# Convert async URL to sync URL
+# Configure broker - remove the condition check to ensure it always uses our settings
+# Set up Redis broker with results backend
+redis_url = os.getenv("DRAMATIQ_BROKER_URL", "redis://redis:6379/0")
+print(f"Configuring Dramatiq with Redis URL: {redis_url}")  # Debug logging
+
+result_backend = RedisBackend(url=redis_url)
+redis_broker = RedisBroker(url=redis_url)
+
+# Add middleware including Results
+redis_broker.add_middleware(Results(backend=result_backend))
+redis_broker.add_middleware(AgeLimit())
+redis_broker.add_middleware(TimeLimit())
+redis_broker.add_middleware(ShutdownNotifications())
+redis_broker.add_middleware(Retries(max_retries=3))
+
+dramatiq.set_broker(redis_broker)
+print(f"Dramatiq broker configured successfully")  # Debug logging
+
+# Export the broker for Dramatiq CLI
+broker = redis_broker
+
+# Create synchronous engine for worker processes with connection pooling
 sync_db_url = settings.DATABASE_URL.replace('+asyncpg', '')
-engine = create_engine(sync_db_url)
+engine = create_engine(
+    sync_db_url,
+    pool_pre_ping=True,  # Test connections before using them
+    pool_size=5,         # Number of connections to maintain
+    max_overflow=10,     # Maximum overflow connections
+    pool_recycle=3600,   # Recycle connections after 1 hour
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-@dramatiq.actor
+def _parse_amount(value: str | None) -> float:
+    """Parse a monetary amount from a string."""
+    if not value:
+        return 0.0
+    try:
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        return float(cleaned)
+    except Exception:
+        return 0.0
+
+
+@dramatiq.actor(max_retries=3)
 def extract_and_audit_receipt(receipt_id: int, user_id: int):
-    """Background task to extract data from receipt and audit it.
-    
-    This is the Dramatiq version of the task that will be executed
-    by the worker process.
-    """
+    """Background task to extract data from receipt and audit it."""
     session = SessionLocal()
     rec = None
+    job = None
+    start_time = time.time()
     
-    # Override user_id to 2 for dev mode
-    if user_id == 1:  # If it's the old default user
-        user_id = 2  # Use dev user instead
+    # Get the current message ID from Dramatiq
+    from dramatiq.middleware import CurrentMessage
+    message = CurrentMessage.get_current_message()
+    message_id = message.message_id if message else str(receipt_id)
     
     try:
-        # Get the receipt
+        # Create or update job record
+        job = session.query(BackgroundJob).filter_by(id=message_id).first()
+        if not job:
+            job = BackgroundJob(
+                id=message_id,
+                job_type="receipt_extraction",
+                status="running",
+                user_id=user_id,
+                receipt_id=receipt_id,
+                payload={"receipt_id": receipt_id, "user_id": user_id},
+                started_at=datetime.utcnow()
+            )
+            session.add(job)
+        else:
+            job.status = "running"
+            job.started_at = datetime.utcnow()
+        session.commit()
+        
+        # Override user_id to 2 for dev mode
+        if user_id == 1:
+            user_id = 2
+            
+        # Query receipt
         rec = session.query(Receipt).filter(Receipt.id == receipt_id).first()
         if not rec:
-            print(f"Receipt {receipt_id} not found")
-            return
-        
-        # Update the owner_id if needed
-        if rec.owner_id == 1:
-            rec.owner_id = 2
-            session.commit()
-        
-        # Update status to processing
+            raise ValueError(f"Receipt {receipt_id} not found")
+            
+        # Update receipt status
         rec.status = ReceiptStatus.PROCESSING
+        rec.task_started_at = datetime.utcnow()
+        job.progress = 10
         session.commit()
         
         # Load file data from storage
-        storage_service = StorageService()
-        file_path = storage_service.get_full_path(rec.file_path)
+        print(f"Looking for file at: {rec.file_path}")
+        file_data = load_file_from_storage(rec.file_path)
         
-        if not file_path.exists():
-            print(f"File not found: {rec.file_path}")
-            rec.status = ReceiptStatus.ERROR
-            session.commit()
-            return
+        # Update progress: starting extraction
+        rec.extraction_progress = 10
+        job.progress = 20
+        session.commit()
         
-        file_bytes = file_path.read_bytes()
-        
-        # Extract receipt details - run async function in sync context
+        # Extract data
         extraction_service = ExtractionService()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            details = loop.run_until_complete(
-                extraction_service.extract(file_bytes, rec.filename)
-            )
-        finally:
-            loop.close()
+        import asyncio
+        receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
+        rec.extracted_data = receipt_details.model_dump()
+        rec.extraction_progress = 100
+        job.progress = 60
+        session.commit()
         
-        # Run audit - need to create async version for sync context
-        from app.services.audit_service import AuditDecision
-        from app.models.tables import AuditRule, RuleType
+        # Update progress: starting audit
+        rec.audit_progress = 10
+        job.progress = 70
+        session.commit()
         
-        # Get audit rules synchronously
-        # Check if the receipt has an organisation_id to filter rules
-        if rec.organisation_id:
-            rules = session.query(AuditRule).filter(
-                AuditRule.organisation_id == rec.organisation_id,
-                AuditRule.enabled == True
-            ).all()
-        else:
-            # If no organisation, no rules apply
-            rules = []
+        # Audit the receipt
+        from app.models.schemas import AuditDecision
         
-        # Simple synchronous audit logic
-        # Initialize with all required fields
-        decision = AuditDecision(
-            violations=[],
-            total_amount=details.total,
-            max_allowed=None,
+        # Simple threshold check on total
+        total_amount = _parse_amount(receipt_details.total)
+        amount_over_limit = total_amount > 50  # Check if over $50 spending limit
+        
+        audit_result = AuditDecision(
             not_travel_related=False,
-            amount_over_limit=False,
+            amount_over_limit=amount_over_limit,
             math_error=False,
             handwritten_x=False,
-            reasoning="",
-            needs_audit=False
+            reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
+            needs_audit=amount_over_limit
         )
         
-        # Apply rules
-        for rule in rules:
-            if rule.rule_type == RuleType.MAX_TOTAL and details.total > rule.amount_limit:
-                decision.amount_over_limit = True
-                decision.violations.append(f"Total ${details.total} exceeds limit ${rule.amount_limit}")
-                decision.max_allowed = rule.amount_limit
-                decision.reasoning = f"Receipt total of ${details.total} exceeds the maximum allowed amount of ${rule.amount_limit}"
-                decision.needs_audit = True
-                break
+        rec.audit_decision = audit_result.model_dump()
+        rec.audit_progress = 100
+        job.progress = 90
+        session.commit()
         
-        if not decision.needs_audit:
-            decision.reasoning = "Receipt approved - no rule violations found"
-        
-        # Update receipt record
-        rec.extracted_data = details.model_dump()
-        rec.audit_decision = decision.model_dump()
+        # Update receipt as completed
+        duration_ms = int((time.time() - start_time) * 1000)
         rec.status = ReceiptStatus.COMPLETED
+        rec.task_completed_at = datetime.utcnow()
+        rec.processing_duration_ms = duration_ms
+        
+        # Update job as completed
+        job.status = "completed"
+        job.progress = 100
+        job.completed_at = datetime.utcnow()
+        job.result = {
+            "status": "success",
+            "duration_ms": duration_ms,
+            "extracted_total": str(total_amount),
+            "needs_audit": amount_over_limit
+        }
         
         session.commit()
-        print(f"Successfully processed receipt {receipt_id}")
+        print(f"Successfully processed receipt {receipt_id} in {duration_ms}ms")
         
     except Exception as e:
-        print(f"Failed to process receipt {receipt_id}: {e}")
+        print(f"Failed to process receipt {receipt_id}: {str(e)}")
         if rec:
-            rec.status = ReceiptStatus.ERROR
-            session.commit()
+            rec.status = ReceiptStatus.FAILED
+            rec.task_error = str(e)
+            rec.task_retry_count = getattr(rec, 'task_retry_count', 0) + 1
+        
+        if job:
+            job.status = "failed"
+            job.error = str(e)
+            job.completed_at = datetime.utcnow()
+            
+        session.commit()
         raise
+        
     finally:
         session.close()
 
