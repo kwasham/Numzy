@@ -13,7 +13,6 @@ traversal issues and collisions. You can extend this service to
 generate presigned URLs or integrate thumbnail generation.
 """
 
-import os
 import uuid
 from pathlib import Path
 from typing import Tuple
@@ -55,6 +54,11 @@ class StorageService:
         user_dir.mkdir(parents=True, exist_ok=True)
 
         file_path = user_dir / filename
+        
+        # Check if file content is already read
+        if hasattr(upload.file, 'seek'):
+            upload.file.seek(0)
+        
         # Write the file asynchronously
         contents = await upload.read()
         file_path.write_bytes(contents)
@@ -66,3 +70,28 @@ class StorageService:
     def get_full_path(self, relative_path: str) -> Path:
         """Resolve a stored file's full path on the filesystem."""
         return self.base_dir / relative_path
+
+
+# Standalone function for use by background tasks
+def load_file_from_storage(file_path: str) -> bytes:
+    """Load a file from storage.
+
+    Args:
+        file_path: The relative path to the file in storage
+
+    Returns:
+        The file contents as bytes
+    """
+    # Create a storage service instance
+    storage = StorageService()
+
+    # Get the full path
+    full_path = storage.get_full_path(file_path)
+    print(f"Looking for file at: {full_path}")
+
+    # Read and return the file
+    try:
+        with open(full_path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise ValueError(f"File not found: {file_path}")
