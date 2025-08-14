@@ -6,6 +6,8 @@ from typing import get_type_hints, Union, Optional, get_args, get_origin
 from datetime import datetime
 from enum import Enum
 import sys
+# Ensure the backend directory is on sys.path so 'app' is importable
+
 
 # Add backend to path
 backend_path = Path(__file__).parent.parent / "backend"
