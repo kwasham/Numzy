@@ -19,7 +19,7 @@ should be replaced with real authentication in production.
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -87,8 +87,9 @@ async def get_current_user(
     auth_header = request.headers.get("Authorization") if request else None
     if not auth_header:
         logging.getLogger(__name__).warning("Missing Authorization header while DEV_AUTH_BYPASS disabled")
-    credentials = auth_scheme(request)
 
+    # HTTPBearer is an async callable; ensure we await it to obtain credentials
+    credentials: HTTPAuthorizationCredentials = await auth_scheme(request)  # type: ignore[arg-type]
     token = credentials.credentials
 
     # Verify JWT signature and decode using Clerk's public JWKS
