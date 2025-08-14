@@ -1,15 +1,45 @@
 {
-  "python-envs.defaultEnvManager": "ms-python.python:pyenv",
-  "python-envs.pythonProjects": [],
-  "python.testing.pytestArgs": ["receipt_processing_api"],
   "python.testing.unittestEnabled": false,
   "python.testing.pytestEnabled": true,
+  // backend/pytest.ini defines discovery; no explicit pytestArgs needed
   "emeraldwalk.runonsave": {
     "commands": [
       {
         "match": "backend/app/models/schemas.py",
-        "cmd": "pnpm generate:types"
+        "cmd": "python scripts/generate_types.py"
       }
     ]
+  },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "explicit"
+  },
+  "files.autoSave": "onWindowChange",
+  "files.exclude": {
+    "**/.next": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/build": true
+  },
+  "files.watcherExclude": {
+    "**/.next/**": true,
+    "**/node_modules/**": true
+  },
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.detectIndentation": false,
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+    "json"
+  ],
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+  "chat.promptFiles": true,
+  "chat.promptFilesLocations": {
+    ".github/prompts": true
   }
 }
