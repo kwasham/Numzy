@@ -29,21 +29,13 @@ if root_env.exists():
 # Import settings first
 from app.core.config import settings
 
-# Optional Sentry for worker
-try:
-    import sentry_sdk
-    _SENTRY_AVAILABLE = True
-except Exception:
-    _SENTRY_AVAILABLE = False
+from app.core.observability import init_sentry
+try:  # optional import for spans
+    import sentry_sdk  # type: ignore
+except Exception:  # pragma: no cover
+    sentry_sdk = None  # type: ignore
 
-if _SENTRY_AVAILABLE and settings.SENTRY_DSN:
-    sentry_sdk.init(
-        dsn=settings.SENTRY_DSN,
-        traces_sample_rate=float(settings.SENTRY_TRACES_SAMPLE_RATE or 0),
-        profiles_sample_rate=float(settings.SENTRY_PROFILES_SAMPLE_RATE or 0),
-        environment=settings.ENVIRONMENT,
-    release=settings.SENTRY_RELEASE,
-    )
+if init_sentry("worker"):
     print("Sentry SDK initialized for worker")
 
 # Propagate key env vars for libraries reading directly from os.environ

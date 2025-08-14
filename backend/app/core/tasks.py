@@ -24,6 +24,7 @@ import os
 import time
 from datetime import datetime
 from typing import Optional
+from contextlib import nullcontext
 
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
@@ -41,6 +42,12 @@ from app.core.config import settings
 from app.models.tables import Receipt, BackgroundJob, Evaluation
 from app.models.enums import ReceiptStatus, EvaluationStatus
 from app.services.extraction_service import ExtractionService
+
+# Optional Sentry for spans (worker initialises globally)
+try:  # pragma: no cover - instrumentation only
+    import sentry_sdk  # type: ignore
+except Exception:  # pragma: no cover
+    sentry_sdk = None  # type: ignore
 
 # Lightweight Redis publisher for events
 _redis_pub = None
@@ -174,20 +181,29 @@ def _parse_amount(value: str | None) -> float:
 
 @dramatiq.actor(max_retries=3)
 def extract_and_audit_receipt(receipt_id: int, user_id: int):
-    """Background task to extract data from receipt and audit it."""
+    """Background task to extract data from receipt and audit it.
+
+    Adds Sentry spans for major phases when Sentry SDK is available.
+    """
     session = SessionLocal()
     rec = None
     job = None
     start_time = time.time()
-    
+
     # Get the current message ID from Dramatiq
     from dramatiq.middleware import CurrentMessage
     message = CurrentMessage.get_current_message()
     message_id = message.message_id if message else str(receipt_id)
-    
+
+    span_cm = sentry_sdk.start_span if sentry_sdk else None  # type: ignore
+
     try:
         # Query receipt first
-        rec = session.query(Receipt).filter(Receipt.id == receipt_id).first()
+        if span_cm:
+            with span_cm(op="task.fetch_receipt", description="Fetch receipt"):
+                rec = session.query(Receipt).filter(Receipt.id == receipt_id).first()
+        else:
+            rec = session.query(Receipt).filter(Receipt.id == receipt_id).first()
         if not rec:
             raise ValueError(f"Receipt {receipt_id} not found")
 
@@ -225,7 +241,11 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         # Load file data from storage
         print(f"Looking for file at: {rec.file_path}")
         try:
-            file_data = load_file_from_storage(rec.file_path)
+            if span_cm:
+                with span_cm(op="task.load_file", description="Load file from storage"):
+                    file_data = load_file_from_storage(rec.file_path)
+            else:
+                file_data = load_file_from_storage(rec.file_path)
         except ValueError as vf:
             # Non-retryable: file truly not present; mark failed and exit
             print(f"File missing for receipt {receipt_id}: {vf}")
@@ -251,7 +271,11 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         # Extract data
         extraction_service = ExtractionService()
         import asyncio
-        receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
+        if span_cm:
+            with span_cm(op="task.extraction", description="Run extraction service"):
+                receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
+        else:
+            receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
         rec.extracted_data = receipt_details.model_dump()
         rec.extraction_progress = 100
         job.progress = 60
@@ -276,14 +300,25 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         total_amount = _parse_amount(receipt_details.total)
         amount_over_limit = total_amount > 50  # Check if over $50 spending limit
 
-        audit_result = AuditDecision(
-            not_travel_related=False,
-            amount_over_limit=amount_over_limit,
-            math_error=False,
-            handwritten_x=False,
-            reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
-            needs_audit=amount_over_limit,
-        )
+        if span_cm:
+            with span_cm(op="task.audit", description="Audit decision"):
+                audit_result = AuditDecision(
+                    not_travel_related=False,
+                    amount_over_limit=amount_over_limit,
+                    math_error=False,
+                    handwritten_x=False,
+                    reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
+                    needs_audit=amount_over_limit,
+                )
+        else:
+            audit_result = AuditDecision(
+                not_travel_related=False,
+                amount_over_limit=amount_over_limit,
+                math_error=False,
+                handwritten_x=False,
+                reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
+                needs_audit=amount_over_limit,
+            )
 
         rec.audit_decision = audit_result.model_dump()
         rec.audit_progress = 100
@@ -296,7 +331,11 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
 
         # Update receipt as completed
         duration_ms = int((time.time() - start_time) * 1000)
-        rec.status = ReceiptStatus.COMPLETED
+        if span_cm:
+            with span_cm(op="task.finalize", description="Finalize receipt + job"):
+                rec.status = ReceiptStatus.COMPLETED
+        else:
+            rec.status = ReceiptStatus.COMPLETED
         rec.task_completed_at = datetime.utcnow()
         rec.processing_duration_ms = duration_ms
 
@@ -362,9 +401,14 @@ def run_evaluation(evaluation_id: int, user_id: int, receipt_ids: list[int], mod
     session = SessionLocal()
     evaluation = None
     
+    span_cm = sentry_sdk.start_span if sentry_sdk else None  # type: ignore
     try:
         # Get evaluation
-        evaluation = session.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
+        if span_cm:
+            with span_cm(op="evaluation.fetch", description="Fetch evaluation"):
+                evaluation = session.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
+        else:
+            evaluation = session.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
         if not evaluation:
             print(f"Evaluation {evaluation_id} not found")
             return
@@ -375,12 +419,21 @@ def run_evaluation(evaluation_id: int, user_id: int, receipt_ids: list[int], mod
         
         # For now, just mark as completed
         # In a real implementation, you would process the receipts here
-        evaluation.status = EvaluationStatus.COMPLETED
-        evaluation.metrics = {
-            "total_receipts": len(receipt_ids),
-            "processed": len(receipt_ids),
-            "model": model_name
-        }
+        if span_cm:
+            with span_cm(op="evaluation.compute", description="Compute evaluation metrics"):
+                evaluation.status = EvaluationStatus.COMPLETED
+                evaluation.metrics = {
+                    "total_receipts": len(receipt_ids),
+                    "processed": len(receipt_ids),
+                    "model": model_name
+                }
+        else:
+            evaluation.status = EvaluationStatus.COMPLETED
+            evaluation.metrics = {
+                "total_receipts": len(receipt_ids),
+                "processed": len(receipt_ids),
+                "model": model_name
+            }
         session.commit()
         
         print(f"Successfully completed evaluation {evaluation_id}")

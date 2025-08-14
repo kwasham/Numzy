@@ -10,9 +10,10 @@ from __future__ import annotations
 
 
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.security import HTTPBearer
 from app.core.config import settings
+from app.core.observability import init_sentry
 import logging
 from app.core.database import init_db, get_db_debug_info
 from app.api.routes.receipts import router as receipts_router
@@ -30,13 +31,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 
-try:
-    import sentry_sdk
-    from sentry_sdk.integrations.fastapi import FastApiIntegration
-    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
-    _SENTRY_AVAILABLE = True
-except Exception:
-    _SENTRY_AVAILABLE = False
+try:  # optional import for typing / scope usage
+    import sentry_sdk  # type: ignore
+except Exception:  # pragma: no cover
+    sentry_sdk = None  # type: ignore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -47,17 +45,9 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     # Startup
     logger.info("Starting up...")
-    # Init Sentry if configured
-    if _SENTRY_AVAILABLE and settings.SENTRY_DSN:
-        sentry_sdk.init(
-            dsn=settings.SENTRY_DSN,
-            integrations=[FastApiIntegration(), SqlalchemyIntegration()],
-            traces_sample_rate=float(settings.SENTRY_TRACES_SAMPLE_RATE or 0),
-            profiles_sample_rate=float(settings.SENTRY_PROFILES_SAMPLE_RATE or 0),
-            environment=settings.ENVIRONMENT,
-            release=settings.SENTRY_RELEASE,
-        )
-        logger.info("Sentry SDK initialized")
+    # Centralised Sentry init (idempotent)
+    if init_sentry("api"):
+        logger.info("Sentry SDK initialized (api)")
     await init_db()
     yield
     # Shutdown
@@ -69,6 +59,20 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Middleware to enrich Sentry scope with lightweight request + user info
+@app.middleware("http")
+async def sentry_context_middleware(request: Request, call_next):  # type: ignore
+    if sentry_sdk and settings.SENTRY_DSN:
+        with sentry_sdk.configure_scope() as scope:  # type: ignore
+            scope.set_tag("path", request.url.path)
+            scope.set_tag("method", request.method)
+            # Attempt to pull user id from header (lightweight) before auth dependency runs
+            uid = request.headers.get("x-user-id") or request.headers.get("x-user")
+            if uid:
+                scope.user = {"id": uid}
+    response = await call_next(request)
+    return response
 
 # Configure CORS - use settings and be permissive in development
 allow_origins = settings.BACKEND_CORS_ORIGINS
