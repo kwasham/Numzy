@@ -1,0 +1,134 @@
+version: "3.9"
+
+services:
+  # Optional PostgreSQL for local development (use profile local-db)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: numzy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles: ["local-db"]
+
+  # Shared infrastructure (profile: infra)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["infra", "app"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    profiles: ["infra", "app"]
+
+  # Backend API (profile: app)
+  api:
+    build:
+      context: ./backend
+    command: sh -c "python -c 'import asyncio; from app.core.database import init_db; asyncio.run(init_db())' && uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    environment:
+      DEV_AUTH_BYPASS: "true"
+      DRAMATIQ_BROKER_URL: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      # Default to local postgres if profile local-db is used; otherwise Neon via .env
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    depends_on:
+      - redis
+      - minio
+    profiles: ["app"]
+
+  # MCP prompt server (profile: app)
+  mcp:
+    build:
+      context: ./backend
+    command: python app/mcp/prompt_server.py
+    working_dir: /app
+    env_file:
+      - ./.env
+    environment:
+      DEV_AUTH_BYPASS: "true"
+    ports:
+      - "8002:8000"
+    profiles: ["app"]
+
+  # Dramatiq worker (profile: app)
+  worker:
+    build:
+      context: ./backend
+    command: sh -c "sleep 5 && dramatiq app.core.tasks --processes 1 --threads 4"
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./.env
+    environment:
+      DRAMATIQ_BROKER_URL: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      DEV_AUTH_BYPASS: "true"
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
+    depends_on:
+      - api
+      - redis
+      - minio
+    profiles: ["app"]
+
+  # Optional: Frontend in Docker (use profile: frontend)
+  # frontend:
+  #   image: node:20-alpine
+  #   working_dir: /app
+  #   volumes:
+  #     - ./frontend:/app
+  #   command: sh -c "corepack enable && pnpm install && pnpm dev"
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NEXT_TELEMETRY_DISABLED=1
+  #   profiles: ["frontend"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

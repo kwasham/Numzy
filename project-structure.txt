@@ -1,0 +1,393 @@
+.
+├── .DS_Store
+├── .github
+│   └── chatmodes
+│       └── BeastMode.chatmode.md
+├── .gitignore
+├── .vscode
+│   └── settings.json
+├── archives
+│   └── test_receipts_20250805.tar.gz
+├── backend
+│   ├── __init__.py
+│   ├── .DS_Store
+│   ├── .env
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── alembic
+│   │   └── versions
+│   │       └── add_background_jobs_table.py
+│   ├── alembic.ini
+│   ├── app
+│   │   ├── __init__.py
+│   │   ├── api
+│   │   │   ├── __init__.py
+│   │   │   ├── dependencies.py
+│   │   │   ├── error_handlers.py
+│   │   │   ├── main.py
+│   │   │   └── routes
+│   │   │       ├── audit_rules.py
+│   │   │       ├── cost_analysis.py
+│   │   │       ├── evaluations.py
+│   │   │       ├── jobs.py
+│   │   │       ├── prompts.py
+│   │   │       ├── receipts.py
+│   │   │       ├── receipts.py.backup
+│   │   │       ├── teams.py
+│   │   │       └── users.py
+│   │   ├── core
+│   │   │   ├── auth.py
+│   │   │   ├── config.py
+│   │   │   ├── database.py
+│   │   │   ├── security.py
+│   │   │   └── tasks.py
+│   │   ├── mcp
+│   │   │   └── prompt_server.py
+│   │   ├── models
+│   │   │   ├── enums.py
+│   │   │   ├── schemas.py
+│   │   │   └── tables.py
+│   │   ├── scripts
+│   │   │   ├── check_db.py
+│   │   │   └── init_db.py
+│   │   ├── services
+│   │   │   ├── audit_service.py
+│   │   │   ├── billing_service.py
+│   │   │   ├── cost_service.py
+│   │   │   ├── evaluation_service.py
+│   │   │   ├── extraction_service.py
+│   │   │   ├── prompt_templates.py
+│   │   │   ├── rule_engine.py
+│   │   │   └── storage_service.py
+│   │   ├── utils
+│   │   │   ├── helpers.py
+│   │   │   ├── image_processing.py
+│   │   │   ├── metrics.py
+│   │   │   ├── prompts.py
+│   │   │   └── sanitization.py
+│   │   └── worker.py
+│   ├── app.db
+│   ├── backend_checklist.md
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── gpt4-1_prompting_guide copy.ipynb
+│   ├── Master_Checklist.md
+│   ├── migrations
+│   │   ├── env.py
+│   │   ├── README
+│   │   ├── script.py.mako
+│   │   └── versions
+│   │       ├── 0d2b0ca44faa_add_failed_status_to_receiptstatus_enum.py
+│   │       ├── 20250729_add_clerk_id_safe.py
+│   │       ├── 25ca9dbfe70d_initial_schema.py
+│   │       ├── 28d154d8f89c_add_task_tracking_fields.py
+│   │       ├── 5979c07c75bd_add_background_jobs_table.py
+│   │       ├── 5b458752c57e_.py
+│   │       ├── 78dce29a5da6_merge_failed_status_migrations.py
+│   │       ├── c09f83731bf2_add_failed_status_to_enum.py
+│   │       └── cadb996be101_add_background_jobs_table.py
+│   ├── pytest.ini
+│   ├── Recommendations.md
+│   ├── requirements.txt
+│   ├── Structure.md
+│   ├── tests
+│   │   ├── __init__.py
+│   │   ├── .DS_Store
+│   │   ├── data
+│   │   │   ├── .DS_Store
+│   │   │   ├── ground_truth
+│   │   │   │   ├── .DS_Store
+│   │   │   │   ├── audit_results
+│   │   │   │   │   ├── Gas_20240605_164059_Raven_Scan_3_jpeg.rf.e3408aa2b936afd1f1aed84fa40d454e.json
+│   │   │   │   │   ├── Nissan_20250205_121534_Raven_Scan_10_jpeg.rf.5524d7df5648dc37d9bf264aa3f1e2c5.json
+│   │   │   │   │   ├── Nissan_20250205_122340_Raven_Scan_2_jpeg.rf.3f26976203cf4683fc90cbbe34e876bd.json
+│   │   │   │   │   ├── Nissan_20250205_122340_Raven_Scan_3_jpeg.rf.8f7d7e820eeaf8cfb2d61ef8232fc1af.json
+│   │   │   │   │   ├── Retail_20240605_163628_Raven_Scan_1_jpeg.rf.c28eb1342052ef8af13d54a329c8218b.json
+│   │   │   │   │   ├── Sequoia_20241213_192254_Raven_Scan_1_jpeg.rf.955e6e2cd8eac4712c4b0906b0055bdf.json
+│   │   │   │   │   ├── Sequoia_20241213_192558_Raven_Scan_1_jpeg.rf.e111cd27ce61db49da51e6355980f178.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_4_jpeg.rf.b79fe0306ef298356ee020fd63572734.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_9_jpeg.rf.4756583269eace7e380051b580022a04.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_194524_Raven_Scan_1_jpeg.rf.ea9c9e22f0e18cb64e158b64b43de2c0.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_3_jpeg.rf.842940493d72ebac96a20eed97b226fc.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_11_jpeg.rf.5fa0c8031793626f1d87a7acb08617dd.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_15_jpeg.rf.bd3c50eb0d5bd48295b21a4c54c6a639.json
+│   │   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_2_jpeg.rf.ca4db81e957180a860c5557f6e9374e5.json
+│   │   │   │   │   ├── Tundra_20241213_202437_Raven_Scan_2_jpeg.rf.aee205252dda5a853dfe881f841e464d.json
+│   │   │   │   │   ├── Tundra_20241213_202936_Raven_Scan_3_jpeg.rf.40b66c379f232d5621eaa452a87093f1.json
+│   │   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_2_jpeg.rf.dae94ec7e69fb9d48a1f11e50977eb52.json
+│   │   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_5_jpeg.rf.99738f39b4f3109acdd09c30ffb41ea0.json
+│   │   │   │   │   ├── Tundra-gas_20241213_204335_Raven_Scan_5_jpeg.rf.e62eea7e8c43e88491bb73613785b2cb.json
+│   │   │   │   │   └── Tundra-gas_20241213_204335_Raven_Scan_7_jpeg.rf.633afab0f048d51329078497a410a115.json
+│   │   │   │   └── extraction
+│   │   │   │       ├── Gas_20240605_164059_Raven_Scan_3_jpeg.rf.e3408aa2b936afd1f1aed84fa40d454e.json
+│   │   │   │       ├── Nissan_20250205_121534_Raven_Scan_10_jpeg.rf.5524d7df5648dc37d9bf264aa3f1e2c5.json
+│   │   │   │       ├── Nissan_20250205_122340_Raven_Scan_2_jpeg.rf.3f26976203cf4683fc90cbbe34e876bd.json
+│   │   │   │       ├── Nissan_20250205_122340_Raven_Scan_3_jpeg.rf.8f7d7e820eeaf8cfb2d61ef8232fc1af.json
+│   │   │   │       ├── Retail_20240605_163628_Raven_Scan_1_jpeg.rf.c28eb1342052ef8af13d54a329c8218b.json
+│   │   │   │       ├── Sequoia_20241213_192254_Raven_Scan_1_jpeg.rf.955e6e2cd8eac4712c4b0906b0055bdf.json
+│   │   │   │       ├── Sequoia_20241213_192558_Raven_Scan_1_jpeg.rf.e111cd27ce61db49da51e6355980f178.json
+│   │   │   │       ├── Sequoia-gas_20241213_193919_Raven_Scan_4_jpeg.rf.b79fe0306ef298356ee020fd63572734.json
+│   │   │   │       ├── Sequoia-gas_20241213_193919_Raven_Scan_9_jpeg.rf.4756583269eace7e380051b580022a04.json
+│   │   │   │       ├── Sequoia-gas_20241213_194524_Raven_Scan_1_jpeg.rf.ea9c9e22f0e18cb64e158b64b43de2c0.json
+│   │   │   │       ├── Sequoia-gas_20241213_194919_Raven_Scan_3_jpeg.rf.842940493d72ebac96a20eed97b226fc.json
+│   │   │   │       ├── Sequoia-gas_20241213_194920_Raven_Scan_11_jpeg.rf.5fa0c8031793626f1d87a7acb08617dd.json
+│   │   │   │       ├── Sequoia-gas_20241213_194920_Raven_Scan_15_jpeg.rf.bd3c50eb0d5bd48295b21a4c54c6a639.json
+│   │   │   │       ├── Sequoia-gas_20241213_195518_Raven_Scan_2_jpeg.rf.ca4db81e957180a860c5557f6e9374e5.json
+│   │   │   │       ├── Tundra_20241213_202437_Raven_Scan_2_jpeg.rf.aee205252dda5a853dfe881f841e464d.json
+│   │   │   │       ├── Tundra_20241213_202936_Raven_Scan_3_jpeg.rf.40b66c379f232d5621eaa452a87093f1.json
+│   │   │   │       ├── Tundra-gas_20241213_204147_Raven_Scan_2_jpeg.rf.dae94ec7e69fb9d48a1f11e50977eb52.json
+│   │   │   │       ├── Tundra-gas_20241213_204230_Raven_Scan_5_jpeg.rf.99738f39b4f3109acdd09c30ffb41ea0.json
+│   │   │   │       ├── Tundra-gas_20241213_204335_Raven_Scan_5_jpeg.rf.e62eea7e8c43e88491bb73613785b2cb.json
+│   │   │   │       └── Tundra-gas_20241213_204335_Raven_Scan_7_jpeg.rf.633afab0f048d51329078497a410a115.json
+│   │   │   ├── test
+│   │   │   │   ├── _annotations.coco.json
+│   │   │   │   ├── Gas_20240605_164059_Raven_Scan_3_jpeg.rf.e3408aa2b936afd1f1aed84fa40d454e.jpg
+│   │   │   │   ├── Nissan_20250205_121534_Raven_Scan_10_jpeg.rf.5524d7df5648dc37d9bf264aa3f1e2c5.jpg
+│   │   │   │   ├── Nissan_20250205_122340_Raven_Scan_2_jpeg.rf.3f26976203cf4683fc90cbbe34e876bd.jpg
+│   │   │   │   ├── Nissan_20250205_122340_Raven_Scan_3_jpeg.rf.8f7d7e820eeaf8cfb2d61ef8232fc1af.jpg
+│   │   │   │   ├── Retail_20240605_163628_Raven_Scan_1_jpeg.rf.c28eb1342052ef8af13d54a329c8218b.jpg
+│   │   │   │   ├── Sequoia_20241213_192254_Raven_Scan_1_jpeg.rf.955e6e2cd8eac4712c4b0906b0055bdf.jpg
+│   │   │   │   ├── Sequoia_20241213_192558_Raven_Scan_1_jpeg.rf.e111cd27ce61db49da51e6355980f178.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_4_jpeg.rf.b79fe0306ef298356ee020fd63572734.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_9_jpeg.rf.4756583269eace7e380051b580022a04.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194524_Raven_Scan_1_jpeg.rf.ea9c9e22f0e18cb64e158b64b43de2c0.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_3_jpeg.rf.842940493d72ebac96a20eed97b226fc.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_11_jpeg.rf.5fa0c8031793626f1d87a7acb08617dd.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_15_jpeg.rf.bd3c50eb0d5bd48295b21a4c54c6a639.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_2_jpeg.rf.ca4db81e957180a860c5557f6e9374e5.jpg
+│   │   │   │   ├── Tundra_20241213_202437_Raven_Scan_2_jpeg.rf.aee205252dda5a853dfe881f841e464d.jpg
+│   │   │   │   ├── Tundra_20241213_202936_Raven_Scan_3_jpeg.rf.40b66c379f232d5621eaa452a87093f1.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_2_jpeg.rf.dae94ec7e69fb9d48a1f11e50977eb52.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_5_jpeg.rf.99738f39b4f3109acdd09c30ffb41ea0.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204335_Raven_Scan_5_jpeg.rf.e62eea7e8c43e88491bb73613785b2cb.jpg
+│   │   │   │   └── Tundra-gas_20241213_204335_Raven_Scan_7_jpeg.rf.633afab0f048d51329078497a410a115.jpg
+│   │   │   ├── train
+│   │   │   │   ├── _annotations.coco.json
+│   │   │   │   ├── 20230722_175642_Raven_Scan_1_jpeg.rf.3c3adb39a1d928a3e256611cbcbf37a3.jpg
+│   │   │   │   ├── 20230722_175642_Raven_Scan_2_jpeg.rf.f94d0375230ef1ceec0f09e2be41ae26.jpg
+│   │   │   │   ├── 20230722_181229_Raven_Scan_2_jpeg.rf.66ebb9a37bc2847cdabccad28d193e55.jpg
+│   │   │   │   ├── 20230722_181229_Raven_Scan_3_jpeg.rf.f06657c2d18c1b2906d1ea69ac06b1c4.jpg
+│   │   │   │   ├── 20230722_183224_Raven_Scan_5_jpeg.rf.0c388e5c8b9b8dd277855146efbc46e1.jpg
+│   │   │   │   ├── Gas_20240605_164059_Raven_Scan_1_jpeg.rf.39a75652a7cd6756f9e0dbe31aa76ddb.jpg
+│   │   │   │   ├── Gas_20240605_164059_Raven_Scan_2_jpeg.rf.870f4d08c4e210419e2a2dabec90ce1b.jpg
+│   │   │   │   ├── Hardware_20240605_163817_Raven_Scan_1_jpeg.rf.71a2c993f9232ab0bc8a06c696c628a2.jpg
+│   │   │   │   ├── Hardware_20240605_163817_Raven_Scan_2_jpeg.rf.13034eb1fba18b722fea6ec7e86da2d0.jpg
+│   │   │   │   ├── Hardware_20240605_163908_Raven_Scan_1_jpeg.rf.ec4dbb5326b08c102eafe8f24dba9742.jpg
+│   │   │   │   ├── Hardware_20240605_163908_Raven_Scan_2_jpeg.rf.58e73bbc361a4391759b3e1d8ec430c1.jpg
+│   │   │   │   ├── Hardware_20240605_163908_Raven_Scan_3_jpeg.rf.237e1cb993d9f01ff13e943d64446a51.jpg
+│   │   │   │   ├── IndianStore_20240608_114940_Raven_Scan_1_jpeg.rf.40561dbb69dc013fef1706b90d4e26ec.jpg
+│   │   │   │   ├── Nissan_20250205_121533_Raven_Scan_2_jpeg.rf.06328bd5874a7af01f128804483f428b.jpg
+│   │   │   │   ├── Nissan_20250205_121533_Raven_Scan_3_jpeg.rf.c6781dcbf6755687c9e59f62a8a47ac3.jpg
+│   │   │   │   ├── Nissan_20250205_121533_Raven_Scan_4_jpeg.rf.2e960df8be99320bb417fc7f3aa37f4e.jpg
+│   │   │   │   ├── Nissan_20250205_121534_Raven_Scan_6_jpeg.rf.94db252faabe125cb2b0dc642244afcf.jpg
+│   │   │   │   ├── Nissan_20250205_121735_Raven_Scan_5_jpeg.rf.26f1977f5764dfa65e108c8e5ffb0b1f.jpg
+│   │   │   │   ├── Nissan_20250205_121921_Raven_Scan_3_jpeg.rf.2a43e27b2e40cfdb44b222ff7831e5db.jpg
+│   │   │   │   ├── Nissan_20250205_121922_Raven_Scan_8_jpeg.rf.1bc6eda1c7f2ab6def51ceeae00dc325.jpg
+│   │   │   │   ├── Nissan_20250205_122221_Raven_Scan_2_jpeg.rf.8f9727d1f5f95b69f3fb0fdf5dddaa28.jpg
+│   │   │   │   ├── Nissan_20250205_122221_Raven_Scan_5_jpeg.rf.4fe3dbf7d59931ba5450aaa7f6702864.jpg
+│   │   │   │   ├── Nissan_20250205_122222_Raven_Scan_10_jpeg.rf.1a9bb7518da8690d7e90bca75507e456.jpg
+│   │   │   │   ├── Nissan_20250205_122222_Raven_Scan_8_jpeg.rf.454d5177c322d4c460b4d1a9e5936e92.jpg
+│   │   │   │   ├── Nissan_20250205_122222_Raven_Scan_9_jpeg.rf.97aacb9c1bdc300761bc2d392f333a95.jpg
+│   │   │   │   ├── Nissan_20250205_122341_Raven_Scan_4_jpeg.rf.71beabde2d6b14f1bb883a79bb7b0f67.jpg
+│   │   │   │   ├── Nissan_20250205_122341_Raven_Scan_5_jpeg.rf.7c1f5d39ce64161dff0e9453df9c0a72.jpg
+│   │   │   │   ├── Nissan_20250205_122341_Raven_Scan_6_jpeg.rf.8224e419869099cf0ba2a63642aa9fa9.jpg
+│   │   │   │   ├── Nissan_20250205_122558_Raven_Scan_1_jpeg.rf.bccaf741ab633aeb71f83292d6e7a148.jpg
+│   │   │   │   ├── Nissan_20250205_122558_Raven_Scan_2_jpeg.rf.6c9cf586237582b3a9f5363e3c53ca58.jpg
+│   │   │   │   ├── Nissan_20250205_122558_Raven_Scan_3_jpeg.rf.07c60e74b63cbde3ceed4b447930b529.jpg
+│   │   │   │   ├── Nissan_20250205_122558_Raven_Scan_4_jpeg.rf.26a64378cccfa3e9827fb15671872b92.jpg
+│   │   │   │   ├── Nissan_20250205_122558_Raven_Scan_5_jpeg.rf.dc28dc79a43ff44b079d78f859c9d72b.jpg
+│   │   │   │   ├── Nissan_20250205_122600_Raven_Scan_7_jpeg.rf.cc3dbac2ffccd8cf6864ef5ac7f5fcfa.jpg
+│   │   │   │   ├── Nissan_20250205_122628_Raven_Scan_1_jpeg.rf.a13b83239353bbbe1d9f7bbeb69521f6.jpg
+│   │   │   │   ├── Nissan_20250205_122628_Raven_Scan_2_jpeg.rf.25be5a571c9741dc12e6e38c5a561550.jpg
+│   │   │   │   ├── Nissan_20250205_122628_Raven_Scan_4_jpeg.rf.af314df10e5e4b8e5f99a3a6260fab49.jpg
+│   │   │   │   ├── Retail_20240605_163628_Raven_Scan_2_jpeg.rf.35d868eb40a88fd44ecbbed1a8ee51b8.jpg
+│   │   │   │   ├── Retail_20240605_163710_Raven_Scan_1_jpeg.rf.40f4c30aca3685778b19f1a21c23f79b.jpg
+│   │   │   │   ├── Retail_20240605_163710_Raven_Scan_2_jpeg.rf.f4c9b3875b4609a0256b4578798f9cdc.jpg
+│   │   │   │   ├── Retail_20240605_163710_Raven_Scan_3_jpeg.rf.b044bd200e56d5fdd0dcd4ea57d1a31c.jpg
+│   │   │   │   ├── Sequoia_20241213_192254_Raven_Scan_3_jpeg.rf.e12811b0334975a358c5655dc8d4d5a7.jpg
+│   │   │   │   ├── Sequoia_20241213_192336_Raven_Scan_2_jpeg.rf.99d07eb370dea20c1197adeab74c4448.jpg
+│   │   │   │   ├── Sequoia_20241213_192452_Raven_Scan_1_jpeg.rf.eccbc39668e580215428c36fb76408f8.jpg
+│   │   │   │   ├── Sequoia_20241213_192452_Raven_Scan_2_jpeg.rf.be96770c295853db3673d5f41c031003.jpg
+│   │   │   │   ├── Sequoia_20241213_192452_Raven_Scan_3_jpeg.rf.1013317ed0fda796b7fdb05dccc78daf.jpg
+│   │   │   │   ├── Sequoia_20241213_192452_Raven_Scan_4_jpeg.rf.bc0dfe5aada243500f84b3cff95b7dd0.jpg
+│   │   │   │   ├── Sequoia_20241213_192452_Raven_Scan_5_jpeg.rf.57cef8c0b64419aa031d7c0e9195f3ec.jpg
+│   │   │   │   ├── Sequoia_20241213_192630_Raven_Scan_1_jpeg.rf.12ce4bab47eb8514e06e135b8835b70a.jpg
+│   │   │   │   ├── Sequoia_20241213_192654_Raven_Scan_1_jpeg.rf.904891b711438e22708a9afccb233ccd.jpg
+│   │   │   │   ├── Sequoia_20241213_192654_Raven_Scan_3_jpeg.rf.fb88a8e932ba9e40b61add68a6044197.jpg
+│   │   │   │   ├── Sequoia_20241213_192745_Raven_Scan_1_jpeg.rf.03ff72b2ec924fe7c8ca6dfa617f81ac.jpg
+│   │   │   │   ├── Sequoia_20241213_192745_Raven_Scan_2_jpeg.rf.85ca1bbb9ef3657788c76a34595ebc38.jpg
+│   │   │   │   ├── Sequoia_20241213_192745_Raven_Scan_3_jpeg.rf.cd0d34189dafe02ac021f98234fb291a.jpg
+│   │   │   │   ├── Sequoia_20241213_192745_Raven_Scan_4_jpeg.rf.1f02dfbd674d5143a9107835090072cd.jpg
+│   │   │   │   ├── Sequoia_20241213_192803_Raven_Scan_1_jpeg.rf.e91352e1f7e356714473e9264ad024c0.jpg
+│   │   │   │   ├── Sequoia_20241213_192803_Raven_Scan_2_jpeg.rf.55c581ccdbeb1ac29db275f5a35c3117.jpg
+│   │   │   │   ├── Sequoia_20241213_192803_Raven_Scan_5_jpeg.rf.90446f17514f6e6c0b7d1b58afcf3c08.jpg
+│   │   │   │   ├── Sequoia_20241213_193054_Raven_Scan_1_jpeg.rf.880ffc0074b547e30907263ce1b04f1e.jpg
+│   │   │   │   ├── Sequoia_20241213_193054_Raven_Scan_2_jpeg.rf.c98aad00c50cf1363503de8b3b4a985f.jpg
+│   │   │   │   ├── Sequoia_20241213_193054_Raven_Scan_3_jpeg.rf.e5ef8cee60d66bf40f1a23dec05962d9.jpg
+│   │   │   │   ├── Sequoia_20241213_193054_Raven_Scan_4_jpeg.rf.6049585c6d01c6278ee0b692aba19dff.jpg
+│   │   │   │   ├── Sequoia_20241213_193400_Raven_Scan_1_jpeg.rf.701b68ea7314571871ecdc3c6d106fa1.jpg
+│   │   │   │   ├── Sequoia_20241213_193400_Raven_Scan_2_jpeg.rf.59cdd4d191c07956044c677ebd86e4b2.jpg
+│   │   │   │   ├── Sequoia_20241213_193400_Raven_Scan_3_jpeg.rf.738129978b09c5ce7d2cc8bd645c3e69.jpg
+│   │   │   │   ├── Sequoia_20241213_193400_Raven_Scan_6_jpeg.rf.e054f51f706a55386cdd0c1581e411ea.jpg
+│   │   │   │   ├── Sequoia_20241213_193401_Raven_Scan_7_jpeg.rf.b0b2ef779a595864a2c6e9bc44fe0b28.jpg
+│   │   │   │   ├── Sequoia_20241213_193521_Raven_Scan_1_jpeg.rf.7ff5600e02fce8e5babf7b63891d3e1b.jpg
+│   │   │   │   ├── Sequoia_20241213_193521_Raven_Scan_2_jpeg.rf.b447813dfc7ecdeba747fcbc7014275f.jpg
+│   │   │   │   ├── Sequoia_20241213_193521_Raven_Scan_3_jpeg.rf.dd29bc9680bc4fe37476b1eabebc4d7c.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193918_Raven_Scan_1_jpeg.rf.d92eba0b2625ec69ce9346eb8f5f3e94.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193918_Raven_Scan_2_jpeg.rf.ad638cec0b02cf93df903d99cf4ab5ad.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_3_jpeg.rf.1406e002f00f5521a78404de60bf5690.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_5_jpeg.rf.d2ddc593adf2c64ca2c1546a099fc4d9.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_6_jpeg.rf.e442ebf2ed0a0325f8b8881aac6f0a38.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_7_jpeg.rf.f5d65d2c3098724db1d52a4f180caf19.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193919_Raven_Scan_8_jpeg.rf.f1715154b3c3cce78f2fd6f0930f26d4.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193920_Raven_Scan_10_jpeg.rf.a262d6e042e40105dcccd10839cd5f6e.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_193920_Raven_Scan_11_jpeg.rf.9b569f93e967e7d3453f1b7780c05c9a.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194013_Raven_Scan_1_jpeg.rf.cf91f0c6b1a1a26c500dc1ff2d75ea1c.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194013_Raven_Scan_2_jpeg.rf.ab099352c2fd225f0f2f95649ef8c11e.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194013_Raven_Scan_3_jpeg.rf.d3748061aa9a5e0e489823e8359124e8.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_1_jpeg.rf.2f854cf372c135dce642eeab3453e3f2.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_2_jpeg.rf.32be33a7960fd8bed4f04c92aa06c426.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_4_jpeg.rf.09f351b322b9295bfa44aec343024e33.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_5_jpeg.rf.45ad2ccfc723dd8e5107be93952ae277.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194919_Raven_Scan_6_jpeg.rf.d8699a446f07d307b45cb33d81a576e8.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_10_jpeg.rf.e89188ae7e992709f95929b2d892c5e7.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_12_jpeg.rf.ecf5697382cbae11b1eb08a197d930d5.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_13_jpeg.rf.d83b3b3d5506db7ba31615ff9be77bde.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_14_jpeg.rf.9ec81f6789a760e39bb38f0872ffe67f.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_7_jpeg.rf.1c8ea3c3560a0cd5507dfb2534304418.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_8_jpeg.rf.9592841dacc48da7e6a67902a55a92d4.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194920_Raven_Scan_9_jpeg.rf.f48916e9d26cc075996450bcc3b57187.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_16_jpeg.rf.cd99173b0c5f4ac92d290ef3ebd67c3e.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_17_jpeg.rf.28c6487146387e3f1f95b39a60573c6c.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_18_jpeg.rf.7a7e25c2c0e1ca8bccd492537fe13e6d.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_19_jpeg.rf.e116f7e82fa7ecbda0f7de82a8c9f380.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_20_jpeg.rf.c514bfaf4147a773b18edd9e8e35f94a.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194921_Raven_Scan_21_jpeg.rf.efb45529c4d8d1321de5b653cc53e5a2.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_194922_Raven_Scan_22_jpeg.rf.bb41dcb94690c4f36a88d51121d563a4.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195357_Raven_Scan_1_jpeg.rf.af9c04182f84be6a3232af9911ac31ab.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195357_Raven_Scan_2_jpeg.rf.c1e9578dcccdf8d0321a0171e2687331.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195357_Raven_Scan_3_jpeg.rf.5b3957c578e0c33f3cff61a84b2bf575.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195357_Raven_Scan_4_jpeg.rf.111ec6ad50f23f1b2bf76fa3e5e1db53.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195357_Raven_Scan_5_jpeg.rf.6f6311007049909eda049f9431b3febf.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195450_Raven_Scan_1_jpeg.rf.fd9bf7325f2f48db1f57f89457d0316b.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195450_Raven_Scan_2_jpeg.rf.24e52a4925355b8c6ced5f29e2e206e2.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195450_Raven_Scan_3_jpeg.rf.06a32528c4fc6e5c65553a834f01c017.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195451_Raven_Scan_4_jpeg.rf.ddd1d027658b921e021805a62f8ecdb4.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_1_jpeg.rf.b6a2399a247320efb9f39bf67abe61a6.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_3_jpeg.rf.1f187e3a6199196f4f7926ea5f55a6e4.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_4_jpeg.rf.637e45098ded384c66d1eb0f362a467b.jpg
+│   │   │   │   ├── Sequoia-gas_20241213_195518_Raven_Scan_5_jpeg.rf.145325befdf167d4070e5d8f62b8beab.jpg
+│   │   │   │   ├── Supplies_20240322_220858_Raven_Scan_3_jpeg.rf.50852940734939c8838819d7795e1756.jpg
+│   │   │   │   ├── Tundra_20241213_202007_Raven_Scan_1_jpeg.rf.46e673adf654c038cdad131b32a1f994.jpg
+│   │   │   │   ├── Tundra_20241213_202437_Raven_Scan_1_jpeg.rf.4f37d10007af8b766769ae5e835e7534.jpg
+│   │   │   │   ├── Tundra_20241213_202735_Raven_Scan_1_jpeg.rf.80f6a0f79e558a051bdea1ae58b01ab5.jpg
+│   │   │   │   ├── Tundra_20241213_202735_Raven_Scan_2_jpeg.rf.daea540aa5f35b62bc30c417bd554a3c.jpg
+│   │   │   │   ├── Tundra_20241213_202735_Raven_Scan_3_jpeg.rf.5a3f6c027e731fe273b56e55001b2379.jpg
+│   │   │   │   ├── Tundra_20241213_202735_Raven_Scan_5_jpeg.rf.4c8b0c217a2b063cef6bbc39f120dc73.jpg
+│   │   │   │   ├── Tundra_20241213_202829_Raven_Scan_1_jpeg.rf.e7a83ea8022c9c44d3fee27bc6f5914b.jpg
+│   │   │   │   ├── Tundra_20241213_202829_Raven_Scan_2_jpeg.rf.f1706af5534394dd09404fb1c31f87f7.jpg
+│   │   │   │   ├── Tundra_20241213_202829_Raven_Scan_3_jpeg.rf.91c678c2a2fe938120ba69c71265d33c.jpg
+│   │   │   │   ├── Tundra_20241213_202830_Raven_Scan_5_jpeg.rf.12530175dc61ef18c8702fc96bb9584d.jpg
+│   │   │   │   ├── Tundra_20241213_202936_Raven_Scan_1_jpeg.rf.01439e52faca1a046d7ae24329818aec.jpg
+│   │   │   │   ├── Tundra_20241213_202936_Raven_Scan_2_jpeg.rf.d1625171ce678be716dada302935111b.jpg
+│   │   │   │   ├── Tundra-gas_20241213_203836_Raven_Scan_1_jpeg.rf.e82f506a0432fce13abc13e163855f72.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204025_Raven_Scan_1_jpeg.rf.fc7195d4503ff5494640b68ecafe2cf5.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204025_Raven_Scan_2_jpeg.rf.f4bebecd3cbf35c20ee7cec5d11d8ae1.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_1_jpeg.rf.0fe4d3229a9ac175df40550c9d3aeaaa.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_3_jpeg.rf.aef231daec138fb81101f05a469a6719.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_4_jpeg.rf.2f4c2f7c6550bc38f50902b351b334e4.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204147_Raven_Scan_5_jpeg.rf.ea764a4bd79cc77e8a8d79ba30f51536.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_2_jpeg.rf.3feecef84540f4aba0925aff291457e1.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_3_jpeg.rf.e320e4db0e8195a4144ab853be2e9f28.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_4_jpeg.rf.c4b6a4dc2b51320978de22976d331c65.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_6_jpeg.rf.7631b4d7e5ddccdff3152a494dc37b9e.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_7_jpeg.rf.f83d69a2eff3c69217ddbf52f39d634f.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204230_Raven_Scan_8_jpeg.rf.a3dcd6a54bc388dc40d5a6b0b06e69c8.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204334_Raven_Scan_1_jpeg.rf.bf77a323a145e3b4fc614876c9ca4fb0.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204334_Raven_Scan_2_jpeg.rf.9692646e2f403d357318a206fbd18269.jpg
+│   │   │   │   ├── Tundra-gas_20241213_204334_Raven_Scan_4_jpeg.rf.a2a999e7850408c6b81379381fde4f73.jpg
+│   │   │   │   └── Tundra-gas_20241213_204335_Raven_Scan_6_jpeg.rf.8eb66a093287543b73c9df49d9e968b5.jpg
+│   │   │   └── valid
+│   │   │       ├── _annotations.coco.json
+│   │   │       ├── 20230722_175642_Raven_Scan_3_jpeg.rf.4cd553bed97e4bf9149d3e6c4ca58313.jpg
+│   │   │       ├── 20230722_181229_Raven_Scan_1_jpeg.rf.c70561a2eb3a999381e9e991ad21c587.jpg
+│   │   │       ├── Gas_20240605_164028_Raven_Scan_1_jpeg.rf.7a846dc34895cb9c03b309cd61f68c60.jpg
+│   │   │       ├── Gas_20240605_164028_Raven_Scan_2_jpeg.rf.7c35b29207d793eaf7152f266fc8688e.jpg
+│   │   │       ├── Nissan_20250205_121533_Raven_Scan_1_jpeg.rf.d1a9fded014e1101efc056d20c1f82df.jpg
+│   │   │       ├── Nissan_20250205_121534_Raven_Scan_5_jpeg.rf.42438661ff569a176a6d831484e20513.jpg
+│   │   │       ├── Nissan_20250205_121734_Raven_Scan_1_jpeg.rf.18f709f036ca0775d2cd8b82fc3c898e.jpg
+│   │   │       ├── Nissan_20250205_121921_Raven_Scan_1_jpeg.rf.2d50f87cbf71b62f79d11a79ecfcd3a4.jpg
+│   │   │       ├── Nissan_20250205_122222_Raven_Scan_11_jpeg.rf.fe68d47b025f6d4001d7d10b6b4391be.jpg
+│   │   │       ├── Nissan_20250205_122340_Raven_Scan_1_jpeg.rf.2877c656f2d08ce8a0bc65f54b3250e5.jpg
+│   │   │       ├── Nissan_20250205_122341_Raven_Scan_7_jpeg.rf.ddc192fd5e9af47d10b96a7aacab3b1c.jpg
+│   │   │       ├── Nissan_20250205_122600_Raven_Scan_6_jpeg.rf.daee85f01492176a6f79fbb443e12928.jpg
+│   │   │       ├── Nissan_20250205_122628_Raven_Scan_3_jpeg.rf.58c0533864937781e5e97daf12d30677.jpg
+│   │   │       ├── Retail_20240605_163628_Raven_Scan_3_jpeg.rf.d69935ad83c20884a7844df42e160d02.jpg
+│   │   │       ├── Sequoia_20241213_192254_Raven_Scan_2_jpeg.rf.c4ff005d665276f3d4db4f282b55ec77.jpg
+│   │   │       ├── Sequoia_20241213_192336_Raven_Scan_1_jpeg.rf.d3eb8642df50d0b55864057194238139.jpg
+│   │   │       ├── Sequoia_20241213_192559_Raven_Scan_2_jpeg.rf.11f100e8ae807d3b5bcdf8e0d12f7ed7.jpg
+│   │   │       ├── Sequoia_20241213_192559_Raven_Scan_3_jpeg.rf.3f9261b6116d531b88fd6e347783aaeb.jpg
+│   │   │       ├── Sequoia_20241213_192631_Raven_Scan_2_jpeg.rf.1b1def731d82105bee53ddcbf108cbbb.jpg
+│   │   │       ├── Sequoia_20241213_192654_Raven_Scan_2_jpeg.rf.5918930f9af1f6fd6244c7ca0e147809.jpg
+│   │   │       ├── Sequoia_20241213_192654_Raven_Scan_4_jpeg.rf.dce140d3e3a1d488a5c5026100860d4f.jpg
+│   │   │       ├── Sequoia_20241213_192803_Raven_Scan_3_jpeg.rf.516239c643507487c972ef6824af160a.jpg
+│   │   │       ├── Sequoia_20241213_192803_Raven_Scan_4_jpeg.rf.f803465c00f2d22baa1c94780fb51db7.jpg
+│   │   │       ├── Sequoia_20241213_192841_Raven_Scan_1_jpeg.rf.74c5310cf99e9e9ecda387bcb723d0f2.jpg
+│   │   │       ├── Sequoia_20241213_193055_Raven_Scan_5_jpeg.rf.0af561aa4153cf121b99150472177c2f.jpg
+│   │   │       ├── Sequoia_20241213_193400_Raven_Scan_4_jpeg.rf.b4f9f86fd21c7db57197a2c452f80b9c.jpg
+│   │   │       ├── Sequoia_20241213_193400_Raven_Scan_5_jpeg.rf.bc3daf082238e4d73ad0ae9950d44670.jpg
+│   │   │       ├── Sequoia_20241213_193401_Raven_Scan_8_jpeg.rf.91f8d78545516fb001b93978e04fb011.jpg
+│   │   │       ├── Sequoia-gas_20241213_193920_Raven_Scan_12_jpeg.rf.d56b2bf84d77723469be1cedf700b2a9.jpg
+│   │   │       ├── Sequoia-gas_20241213_194014_Raven_Scan_4_jpeg.rf.90308604316d07a15153a9b6db1f0f90.jpg
+│   │   │       ├── Sequoia-gas_20241213_194106_Raven_Scan_1_jpeg.rf.e9a521a63ea4700459651e2c96afb9ba.jpg
+│   │   │       ├── Sequoia-gas_20241213_195358_Raven_Scan_6_jpeg.rf.b8c1ffd1c2c58c91354d3d839cba1466.jpg
+│   │   │       ├── Sequoia-gas_20241213_195358_Raven_Scan_7_jpeg.rf.6eff6a102f4216378d4d96144b52dba0.jpg
+│   │   │       ├── Supplies_20240322_220858_Raven_Scan_2_jpeg.rf.2068c7de7ebbec81ec84ea0def60d18b.jpg
+│   │   │       ├── Tundra_20241213_202007_Raven_Scan_2_jpeg.rf.1cd636cabd48f90aeb645ad090db5dac.jpg
+│   │   │       ├── Tundra_20241213_202348_Raven_Scan_1_jpeg.rf.0523656e0a361661c5ebfe4973988289.jpg
+│   │   │       ├── Tundra_20241213_202437_Raven_Scan_3_jpeg.rf.9b1cbf7a34d2ef6485309e675a24154d.jpg
+│   │   │       ├── Tundra_20241213_202735_Raven_Scan_4_jpeg.rf.bd44ef335b6dd51acd9082733c8ca64c.jpg
+│   │   │       ├── Tundra_20241213_202735_Raven_Scan_6_jpeg.rf.ff0d7c3776136b83bdf7dcdabcb9b23e.jpg
+│   │   │       ├── Tundra_20241213_202830_Raven_Scan_4_jpeg.rf.3bd97b201848d3f2f1f77b7b822c24f5.jpg
+│   │   │       ├── Tundra-gas_20241213_204147_Raven_Scan_6_jpeg.rf.d6798a8413c74a1fb2c86ab3d928d8bb.jpg
+│   │   │       ├── Tundra-gas_20241213_204229_Raven_Scan_1_jpeg.rf.eb051a2811dd017a3a272645fd5be5d1.jpg
+│   │   │       ├── Tundra-gas_20241213_204230_Raven_Scan_9_jpeg.rf.681850bbe070a0154db4a1e7ea4c4b42.jpg
+│   │   │       └── Tundra-gas_20241213_204334_Raven_Scan_3_jpeg.rf.e306cfde22d4afb78781ab35a33cb975.jpg
+│   │   └── test_comprehensive_stress.py
+│   └── uploads
+├── frontend
+│   ├── .gitignore
+│   ├── app
+│   │   ├── favicon.ico
+│   │   ├── globals.css
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── components
+│   │   ├── receipt-upload.tsx
+│   │   └── recent-receipts.tsx
+│   ├── eslint.config.mjs
+│   ├── lib
+│   ├── next-env.d.ts
+│   ├── next.config.ts
+│   ├── package.json
+│   ├── postcss.config.mjs
+│   ├── public
+│   │   ├── file.svg
+│   │   ├── globe.svg
+│   │   ├── next.svg
+│   │   ├── vercel.svg
+│   │   └── window.svg
+│   ├── README.md
+│   └── tsconfig.json
+├── package.json
+├── pnpm-lock.yaml
+├── pnpm-workspace.yaml
+├── project-structure.txt
+├── scripts
+│   └── generate_types.py
+└── shared
+    └── types
+        ├── api.ts
+        └── user.ts
+
+36 directories, 355 files

@@ -1,0 +1,39 @@
+{
+  "name": "numzy-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm run dev:infra\" \"pnpm run dev:backend\" \"pnpm run dev:worker\" \"pnpm run dev:frontend\"",
+    "dev:infra": "docker compose --profile infra up -d",
+    "dev:backend": "cd backend && uvicorn app.api.main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:worker": "cd backend && ENVIRONMENT=development python -m dramatiq app.core.tasks",
+    "dev:frontend": "cd frontend && pnpm dev",
+    "dev:app:docker": "docker compose --profile app up --build",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "setup:dev": "bash scripts/setup-dev.sh",
+    "init": "bash scripts/setup-dev.sh",
+    "test": "pnpm run test:backend && pnpm run test:frontend",
+    "test:backend": "cd backend && pytest",
+    "test:frontend": "cd frontend && pnpm test",
+    "lint": "pnpm run lint:backend && pnpm run lint:frontend",
+    "lint:backend": "cd backend && ruff check .",
+    "lint:frontend": "cd frontend && pnpm lint",
+    "format": "pnpm run format:backend && pnpm run format:frontend",
+    "format:backend": "cd backend && black . && ruff check --fix .",
+    "format:frontend": "cd frontend && pnpm format"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "@clerk/backend": "^2.7.0"
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

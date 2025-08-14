@@ -1,0 +1,6 @@
+version: "3.9"
+
+# DEPRECATED: Do not use this file.
+# Use the root-level docker-compose.yml instead.
+
+services: {}

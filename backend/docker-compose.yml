@@ -1,0 +1,15 @@
+# services: # NOTE: Prefer using the root-level docker-compose.yml with profiles (infra/app/local-db)
+#   numzy_api:
+#     build: .
+#     command: sh -c "python -c 'import asyncio; from app.core.database import init_db; asyncio.run(init_db())' && uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --reload"
+#     working_dir: /app
+#     volumes:
+#       - .:/app
+#     ports:
+#       version: "3.9"
+
+#       # DEPRECATED: Do not use this file.
+#       # Use the root-level docker-compose.yml instead.
+
+#       services: {}
+#       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}

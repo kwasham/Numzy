@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Jupyter
+*.ipynb_checkpoints/
+
+# Database
+*.db
+
+# Migrations
+migrations/versions/__pycache__/
+
+# Storage
+receipt_processing_api/storage/
+storage/
+.DS_Store
+*.pyc
+__pycache__/
+
+# Add other common ignores if not already there
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
