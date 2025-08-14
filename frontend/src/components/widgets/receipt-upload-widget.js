@@ -16,9 +16,13 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 async function uploadOne(file) {
 	const form = new FormData();
 	form.append("file", file);
+	// In dev we may rely on backend DEV_AUTH_BYPASS; still send a harmless dummy token.
 	const res = await fetch(`${API_URL}/receipts`, {
 		method: "POST",
 		body: form,
+		headers: {
+			Authorization: "Bearer dev-local",
+		},
 	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");

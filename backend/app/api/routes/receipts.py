@@ -10,7 +10,7 @@ import hashlib
 import base64
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -34,10 +34,15 @@ async def upload_receipt(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_user),
+    request: Request = None,
 ) -> ReceiptRead:
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
     await enforce_tiered_rate_limit(user, "upload", cost=1)
+    # Dev fallback: if bypass enabled and no Authorization header was sent, ensure we still have a user object.
+    if settings.DEV_AUTH_BYPASS and (not request or not request.headers.get("Authorization")):
+        # user is already a DB instance from get_user when bypass is True; nothing extra needed
+        pass
     # Check file type
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
