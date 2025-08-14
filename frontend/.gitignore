@@ -12,6 +12,9 @@
 /.next/
 /out/
 
+# Prevent accidental recreation of legacy root-level App Router folder; we use src/app instead
+/app/
+
 # production
 /build
 

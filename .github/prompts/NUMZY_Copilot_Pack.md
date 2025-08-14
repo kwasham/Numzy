@@ -98,34 +98,41 @@ After edits: Summarize what changed, why, and follow-ups (if any).
 
 ---
 
-## 2) Prompt Specs (equivalent to prompts/*.md)
+## 2) Prompt Specs (equivalent to prompts/\*.md)
 
 ### prompts/review.md — Review Rubric (Numzy)
 
 ```markdown
 # Review Rubric (Numzy)
+
 Output: summary + checklist with pass/fail + concrete follow-ups.
 
 ## Scope
+
 - Change matches linked issue/goal; no drive-by refactors.
 
 ## Backend
+
 - Async FastAPI routes; SQLAlchemy sessions managed correctly; no blocking work in request path (use Dramatiq actor).
 - DTOs/validators present; HTTP status codes correct; errors typed.
 
 ## Frontend
+
 - App Router: server vs client boundary respected; no secrets client-side.
 - Components typed; accessibility (roles, labels, keyboard) checked.
 
 ## Storage & Background
+
 - S3/MinIO usage streams data; content-type set; keys sanitized.
 - Dramatiq tasks idempotent; retries/backoff configured; result paths observable.
 
 ## Observability & Security
+
 - Sentry capture on error paths; PII redaction in logs.
 - Inputs validated; SQL/ORM safe; secrets never logged.
 
 ## Tests & Docs
+
 - Unit/integration tests for new behavior.
 - Readme or JSDoc updated if public API changed.
 ```
@@ -136,22 +143,26 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Task: Implement/modify a FastAPI endpoint
 
 ## Inputs
+
 - Endpoint path & method
 - Request/response models (Pydantic v2 if present)
 - DB access via async SQLAlchemy
 - Long-running work -> Dramatiq actor
 
 ## Steps
-1) Define/extend Pydantic models (validate, docstrings).
-2) Implement route function (async), inject session, handle errors.
-3) If heavy work: enqueue Dramatiq task; return 202 + task id.
-4) Cover with tests: happy path + edge cases + auth errors.
+
+1. Define/extend Pydantic models (validate, docstrings).
+2. Implement route function (async), inject session, handle errors.
+3. If heavy work: enqueue Dramatiq task; return 202 + task id.
+4. Cover with tests: happy path + edge cases + auth errors.
 
 ## Output format
+
 - Minimal unified diff for changed files.
 - Short rationale + assumptions + follow-ups.
 
 ## Notes
+
 - Use dependency-injected DB session.
 - Prefer `SELECT ... LIMIT ...` for pagination.
 - Never block on I/O; stream uploads; sanity-check MIME/size.
@@ -163,17 +174,20 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Task: Add/modify a Dramatiq job
 
 ## Requirements
+
 - Idempotent job function (@dramatiq.actor), small input payloads.
 - Retries/backoff; error logging to Sentry.
 - Store results/side effects in DB or object storage, not in memory.
 
 ## Steps
-1) Define typed payload schema.
-2) Implement actor with try/except; raise for retryable errors.
-3) Add enqueue helper from API layer; return a job id.
-4) Add tests: success, retry, poison message handling.
+
+1. Define typed payload schema.
+2. Implement actor with try/except; raise for retryable errors.
+3. Add enqueue helper from API layer; return a job id.
+4. Add tests: success, retry, poison message handling.
 
 ## Output
+
 - Diff + brief rationale.
 ```
 
@@ -183,18 +197,21 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Task: Create/modify a Next.js App Router page/route
 
 ## Constraints
+
 - Prefer Server Components; mark client components with "use client".
 - Keep server actions in the same file or a sibling actions.ts.
 - Use TypeScript when the existing file is TS.
 - Respect existing design tokens; integrate with Sentry if needed.
 
 ## Steps
-1) Outline route tree and file locations.
-2) Implement server component (fetch on server; stream if large).
-3) Add client boundary only for interactive bits.
-4) Add minimal tests (render + critical behavior).
+
+1. Outline route tree and file locations.
+2. Implement server component (fetch on server; stream if large).
+3. Add client boundary only for interactive bits.
+4. Add minimal tests (render + critical behavior).
 
 ## Output
+
 - Diff + usage example + accessibility note.
 ```
 
@@ -204,15 +221,18 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Task: Build/extend a reusable MUI v6 component
 
 ## Props
-- variant | size | loading | error | aria-* where relevant.
+
+- variant | size | loading | error | aria-\* where relevant.
 - Strong typing for props; default sensible values; forward refs.
 
 ## Requirements
+
 - Accessible by keyboard; focus ring; ARIA labels.
 - SSR-safe; no window access in Server Components.
 - Story/example snippet and tests for props/edge cases.
 
 ## Output
+
 - Component code + small usage snippet + test file skeleton.
 ```
 
@@ -222,16 +242,19 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Testing Playbook
 
 ## Frontend
+
 - If Vitest present, use it; otherwise Jest. Include react-testing-library.
 - Cover: rendering, props, interactions, aria roles, edge cases.
 - Avoid flakiness (fake timers, deterministic data).
 
 ## Backend
+
 - Pytest with async fixtures; test routes, models, workers.
 - Include negative tests (validation/auth).
 - For storage: use ephemeral/minio test bucket; clean up.
 
 ## Output
+
 - New/updated test files + brief coverage summary.
 ```
 
@@ -241,15 +264,18 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Observability Task
 
 ## Goals
+
 - Capture errors to Sentry on both FE/BE.
 - Structured logs; no secrets/PII.
 
 ## Steps
+
 - Frontend: wrap critical boundaries; add instrumentation.ts hook if missing.
 - Backend: init Sentry on startup; set environment, release; capture in exception handlers and worker errors.
 - Add breadcrumbs for key flows (uploads, job enqueue/dequeue).
 
 ## Output
+
 - Code changes + checklist of signals added.
 ```
 
@@ -259,17 +285,20 @@ Output: summary + checklist with pass/fail + concrete follow-ups.
 # Storage Task: S3/MinIO upload & retrieval
 
 ## Requirements
+
 - Streamed uploads; MIME/type validation; size limits.
 - Server-generated, time-limited signed URLs.
 - Keys: user/tenant-safe, normalized.
 
 ## Steps
-1) Server: signer util; PUT/GET presigners with content-type & size constraints.
-2) API: route to obtain signed URL; DB record for object metadata.
-3) Frontend: upload with fetch (stream if possible); handle 4xx/5xx; show progress.
-4) Tests: signer units; API integration; a small end-to-end happy path.
+
+1. Server: signer util; PUT/GET presigners with content-type & size constraints.
+2. API: route to obtain signed URL; DB record for object metadata.
+3. Frontend: upload with fetch (stream if possible); handle 4xx/5xx; show progress.
+4. Tests: signer units; API integration; a small end-to-end happy path.
 
 ## Output
+
 - Diff + example usage.
 ```
 
@@ -353,7 +382,7 @@ Provide an enqueue helper used by the API. Output: diff + brief rationale.
 #### Next.js Page – One-liner
 
 ```text
-@workspace Build a server component page at #frontend/app/receipts/page.tsx using #prompts/next-page.md
+@workspace Build a server component page at #frontend/src/app/receipts/page.tsx using #prompts/next-page.md
 that lists recent receipts (server-side data fetch). Add a small client boundary for a filter form.
 ```
 
@@ -382,7 +411,7 @@ Props: status, amount, uploadedAt, onClick. Include a usage snippet and a test s
 @workspace Following #prompts/mui-component.md:
 - Implement a keyboard-accessible Card with variant, size, loading, error props.
 - Strong TypeScript types, forwardRef, aria-* as needed.
-- Provide a small example in #frontend/app/receipts/page.tsx and a test skeleton in #frontend/tests/ReceiptCard.test.tsx.
+- Provide a small example in #frontend/src/app/receipts/page.tsx and a test skeleton in #frontend/tests/ReceiptCard.test.tsx.
 ```
 
 ### Use `prompts/tests.md`
