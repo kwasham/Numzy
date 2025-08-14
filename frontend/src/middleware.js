@@ -4,6 +4,12 @@ import { appConfig } from "@/config/app";
 import { AuthStrategy } from "@/lib/auth-strategy";
 
 export async function middleware(req) {
+	// Optional root redirect (no root page component). Remove if you prefer a 404 at '/'.
+	if (req.nextUrl.pathname === "/") {
+		const url = req.nextUrl.clone();
+		url.pathname = "/dashboard";
+		return NextResponse.redirect(url);
+	}
 	switch (appConfig.authStrategy) {
 		case AuthStrategy.AUTH0: {
 			const mod = await import("@/lib/auth0/middleware");
