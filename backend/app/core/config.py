@@ -76,7 +76,8 @@ class Settings(BaseSettings):
     MINIO_USE_SSL: bool = Field(default=False, env="MINIO_USE_SSL")
     
     # Auth
-    DEV_AUTH_BYPASS: bool = Field(default=True, env="DEV_AUTH_BYPASS")
+    # Disable auth bypass by default; must be explicitly enabled for local quick starts
+    DEV_AUTH_BYPASS: bool = Field(default=False, env="DEV_AUTH_BYPASS")
     CLERK_SECRET_KEY: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
     
     # File Upload

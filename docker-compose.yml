@@ -59,12 +59,13 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
+      - ./storage:/app/storage # persist uploaded files
     ports:
       - "8000:8000"
     env_file:
       - ./.env
     environment:
-      DEV_AUTH_BYPASS: "true"
+      DEV_AUTH_BYPASS: "false" # disable bypass so real Clerk IDs are used
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       # Default to local postgres if profile local-db is used; otherwise Neon via .env
@@ -99,6 +100,7 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
+      - ./storage:/app/storage # shared storage mount
     env_file:
       - ./.env
     environment:
@@ -107,7 +109,7 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      DEV_AUTH_BYPASS: "true"
+      DEV_AUTH_BYPASS: "false"
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
     depends_on:
       - api
