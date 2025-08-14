@@ -4,8 +4,11 @@ const config = {
 		esmExternals: "loose", // Fix for React PDF Renderer
 	},
 	webpack: (cfg) => {
-		cfg.ignoreWarnings = cfg.ignoreWarnings || [];
-		cfg.ignoreWarnings.push(/Critical dependency: the request of a dependency is an expression/);
+		const extra = [
+			/Critical dependency: the request of a dependency is an expression/,
+			/Critical dependency: require function is used in a way in which dependencies cannot be statically extracted/,
+		];
+		cfg.ignoreWarnings = [...(cfg.ignoreWarnings || []), ...extra];
 		return cfg;
 	},
 };
