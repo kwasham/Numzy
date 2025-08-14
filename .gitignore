@@ -5,3 +5,56 @@ node_modules
 .env.*
 .env.local
 .env.*.local
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Build outputs / caches
+dist
+build
+.next
+coverage
+.turbo
+.eslintcache
+.parcel-cache
+.cache
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Misc
+*.swp
+*.swo
+*.orig
+*.bak
+
+# Local data / artifacts
+uploads/
+storage/
+frontend/public/mockups/
+
+# Docker
+*.pid
+
+# Sentry build artifacts (if generated locally)
+.sentry-cli*
+
