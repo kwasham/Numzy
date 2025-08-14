@@ -19,15 +19,15 @@ should be replaced with real authentication in production.
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db
-from app.models.tables import User, PlanType
+from app.models.tables import User
 from datetime import datetime
-import logging
+from app.models.enums import PlanType
 from app.core.config import settings
 
 import os
@@ -39,15 +39,54 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
 CLERK_API_URL = "https://api.clerk.dev/v1"
 CLERK_JWKS_URL = "https://measured-hyena-43.clerk.accounts.dev/.well-known/jwks.json"
 
-# Cache JWKS to avoid repeated network calls
-_clerk_jwks = None
-def get_clerk_jwks():
+# Cache JWKS (in‑memory). In production consider TTL + background refresh.
+_clerk_jwks: dict | None = None
+
+def get_clerk_jwks() -> dict:
     global _clerk_jwks
     if _clerk_jwks is None:
-        resp = requests.get(CLERK_JWKS_URL)
+        resp = requests.get(CLERK_JWKS_URL, timeout=5)
         resp.raise_for_status()
-        _clerk_jwks = resp.json()
+        data = resp.json()
+        # basic shape check
+        if not isinstance(data, dict) or "keys" not in data:
+            raise RuntimeError("Invalid JWKS payload from Clerk")
+        _clerk_jwks = data
     return _clerk_jwks
+
+def decode_clerk_jwt(token: str) -> dict:
+    """Decode and verify a Clerk JWT using JWKS.
+
+    We select the key with matching `kid` from the JWKS and let python-jose
+    verify signature. Audience verification is disabled (adjust as needed).
+    """
+    try:
+        header = jwt.get_unverified_header(token)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=401, detail=f"Invalid token header: {exc}")
+    kid = header.get("kid")
+    if not kid:
+        raise HTTPException(status_code=401, detail="Invalid Clerk token: missing kid header")
+    jwks = get_clerk_jwks()
+    key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+    if not key:
+        # Invalidate cache & retry once (rotation scenario)
+        global _clerk_jwks
+        _clerk_jwks = None
+        jwks = get_clerk_jwks()
+        key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+        if not key:
+            raise HTTPException(status_code=401, detail="Unknown signing key (kid) for Clerk token")
+    try:
+        payload = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+        return payload
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid Clerk token: {exc}")
 auth_scheme = HTTPBearer()
 
 
@@ -55,14 +94,9 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
     request: Request = None
 ) -> User:
-    """Get current user from JWT or create dev user in dev mode.
-
-    Adds lightweight debug logging (info level) so we can see which path executed
-    when diagnosing mismatched Clerk vs Dev user records.
-    """
-
+    """Get current user from JWT or create dev user in dev mode."""
+    
     if settings.DEV_AUTH_BYPASS:
-        logging.getLogger(__name__).info("Auth bypass active; returning Dev User placeholder")
         # Check if dev user exists
         result = await db.execute(
             select(User).where(User.email == "dev@example.com")
@@ -84,29 +118,16 @@ async def get_current_user(
         return user
     
 
-    auth_header = request.headers.get("Authorization") if request else None
-    if not auth_header:
-        logging.getLogger(__name__).warning("Missing Authorization header while DEV_AUTH_BYPASS disabled")
+    # FastAPI's HTTPBearer __call__ is async; ensure we await it.
+    credentials = await auth_scheme(request)
 
-    # HTTPBearer is an async callable; ensure we await it to obtain credentials
-    credentials: HTTPAuthorizationCredentials = await auth_scheme(request)  # type: ignore[arg-type]
     token = credentials.credentials
 
     # Verify JWT signature and decode using Clerk's public JWKS
-    try:
-        jwks = get_clerk_jwks()
-        payload = jwt.decode(
-            token,
-            jwks,
-            algorithms=["RS256"],
-            options={"verify_aud": False},
-        )
-        clerk_user_id = payload.get("sub")
-        if not clerk_user_id:
-            raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"JWT decode failed: {e}")
-        raise HTTPException(status_code=401, detail=f"Invalid Clerk token: {str(e)}")
+    payload = decode_clerk_jwt(token)
+    clerk_user_id = payload.get("sub")
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
 
     # Fetch Clerk user info
     async with httpx.AsyncClient() as client:
@@ -119,24 +140,13 @@ async def get_current_user(
     if not email:
         raise HTTPException(status_code=400, detail="Clerk user missing email")
 
-    # Find or create user in Neon (prefer matching by clerk_id, fallback to email)
-    result = await db.execute(User.__table__.select().where(User.clerk_id == clerk_user_id))
+    # Find or create user in Neon
+    result = await db.execute(User.__table__.select().where(User.email == email))
     row = result.first()
-    if not row:
-        result_email = await db.execute(User.__table__.select().where(User.email == email))
-        row = result_email.first()
     if row:
         user = User(**row._mapping)
-        # Backfill missing clerk_id if somehow null (legacy rows)
-        if not getattr(user, "clerk_id", None):
-            logging.getLogger(__name__).info("Backfilling missing clerk_id for existing user %s", user.id)
-            await db.execute(
-                User.__table__.update().where(User.id == user.id).values(clerk_id=clerk_user_id)
-            )
-            await db.commit()
-            user.clerk_id = clerk_user_id
         return user
-    new_user = User(clerk_id=clerk_user_id, email=email, name=name.strip() or email, plan=PlanType.PRO)
+    new_user = User(email=email, name=name.strip() or email, plan=PlanType.PRO)
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
