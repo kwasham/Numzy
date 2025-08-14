@@ -1,4 +1,13 @@
-version: "3.9"
+# NOTE: All services use 'profiles'. If you run `docker compose up` without specifying
+# at least one active profile (via --profile or COMPOSE_PROFILES env var), you'll see
+# 'no service selected'. Common dev profiles:
+#   app   -> api, worker, redis, minio, mcp
+#   infra -> redis, minio
+#   local-db -> postgres (local Postgres instead of Neon)
+# Examples:
+#   COMPOSE_PROFILES=app,infra docker compose up -d --build
+#   docker compose --profile app --profile infra up -d --build
+#   docker compose --profile app --profile local-db up -d --build (if you want local postgres)
 
 services:
   # Optional PostgreSQL for local development (use profile local-db)
