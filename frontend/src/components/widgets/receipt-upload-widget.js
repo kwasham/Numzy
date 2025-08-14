@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useAuth } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -13,17 +14,14 @@ import { Previewer } from "@/components/widgets/previewer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function uploadOne(file) {
+async function uploadOne(file, token) {
 	const form = new FormData();
 	form.append("file", file);
-	// In dev we may rely on backend DEV_AUTH_BYPASS; still send a harmless dummy token.
-	const res = await fetch(`${API_URL}/receipts`, {
-		method: "POST",
-		body: form,
-		headers: {
-			Authorization: "Bearer dev-local",
-		},
-	});
+	const headers = {};
+	if (token) {
+		headers["Authorization"] = `Bearer ${token}`;
+	}
+	const res = await fetch(`${API_URL}/receipts`, { method: "POST", body: form, headers });
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		throw new Error(text || `Upload failed (${res.status})`);
@@ -32,6 +30,7 @@ async function uploadOne(file) {
 }
 
 export function ReceiptUploadWidget() {
+	const { getToken } = useAuth();
 	const [files, setFiles] = React.useState([]);
 	const [uploading, setUploading] = React.useState(false);
 
@@ -55,7 +54,13 @@ export function ReceiptUploadWidget() {
 		setUploading(true);
 		try {
 			const first = files[0];
-			const data = await uploadOne(first);
+			let token = null;
+			try {
+				token = await getToken?.();
+			} catch {
+				/* ignore */
+			}
+			const data = await uploadOne(first, token);
 			toast.success(`Uploaded: ${first.name}`);
 			// Optionally, you could route to a detail page if your app supports it
 			clearAll();

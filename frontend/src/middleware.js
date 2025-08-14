@@ -2,34 +2,37 @@ import { NextResponse } from "next/server";
 
 import { appConfig } from "@/config/app";
 import { AuthStrategy } from "@/lib/auth-strategy";
+import { middleware as auth0Middleware } from "@/lib/auth0/middleware";
+import { middleware as clerkMiddleware } from "@/lib/clerk/middleware";
+import { middleware as cognitoMiddleware } from "@/lib/cognito/middleware";
+import { middleware as customAuthMiddleware } from "@/lib/custom-auth/middleware";
+import { middleware as supabaseMiddleware } from "@/lib/supabase/middleware";
 
-export async function middleware(req) {
-	switch (appConfig.authStrategy) {
-		case AuthStrategy.AUTH0: {
-			const mod = await import("@/lib/auth0/middleware");
-			return mod.middleware(req);
-		}
-		case AuthStrategy.CLERK: {
-			const mod = await import("@/lib/clerk/middleware");
-			return mod.middleware(req);
-		}
-		case AuthStrategy.COGNITO: {
-			const mod = await import("@/lib/cognito/middleware");
-			return mod.middleware(req);
-		}
-		case AuthStrategy.CUSTOM: {
-			const mod = await import("@/lib/custom-auth/middleware");
-			return mod.middleware(req);
-		}
-		case AuthStrategy.SUPABASE: {
-			const mod = await import("@/lib/supabase/middleware");
-			return mod.middleware(req);
-		}
-		default: {
-			return NextResponse.next({ request: req });
-		}
-	}
+let middleware = async (req) => {
+	return NextResponse.next({ request: req });
+};
+
+if (appConfig.authStrategy === AuthStrategy.AUTH0) {
+	middleware = auth0Middleware;
 }
+
+if (appConfig.authStrategy === AuthStrategy.CLERK) {
+	middleware = clerkMiddleware;
+}
+
+if (appConfig.authStrategy === AuthStrategy.COGNITO) {
+	middleware = cognitoMiddleware;
+}
+
+if (appConfig.authStrategy === AuthStrategy.CUSTOM) {
+	middleware = customAuthMiddleware;
+}
+
+if (appConfig.authStrategy === AuthStrategy.SUPABASE) {
+	middleware = supabaseMiddleware;
+}
+
+export { middleware };
 
 export const config = {
 	matcher: [

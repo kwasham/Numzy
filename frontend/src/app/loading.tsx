@@ -1,6 +1,8 @@
 // Simple shimmer skeleton loader used during route-level suspense boundaries.
 // Lightweight (no external deps) and deterministic for streaming.
 
+import * as React from "react";
+
 export default function Loading() {
 	return (
 		<>

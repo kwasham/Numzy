@@ -140,13 +140,21 @@ async def get_current_user(
     if not email:
         raise HTTPException(status_code=400, detail="Clerk user missing email")
 
-    # Find or create user in Neon
-    result = await db.execute(User.__table__.select().where(User.email == email))
-    row = result.first()
-    if row:
-        user = User(**row._mapping)
+    # Find or create user (prefer lookup by clerk_id first, then email fallback)
+    result = await db.execute(select(User).where(User.clerk_id == clerk_user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+    if user:
+        # Backfill missing clerk_id if needed
+        if not getattr(user, 'clerk_id', None):
+            user.clerk_id = clerk_user_id  # type: ignore
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
         return user
-    new_user = User(email=email, name=name.strip() or email, plan=PlanType.PRO)
+    new_user = User(email=email, name=name.strip() or email, plan=PlanType.PRO, clerk_id=clerk_user_id)
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
