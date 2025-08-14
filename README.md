@@ -50,9 +50,9 @@ storage/, uploads/  Local artifact & upload storage (dev only)
 
 ```text
 Client Upload -> FastAPI Endpoint -> Validate + Persist metadata ->
-	Dramatiq enqueue (extraction) -> Worker spans tasks:
-		fetch -> parse/extract -> evaluate -> audit -> finalize
-	Results -> DB + S3/MinIO -> API retrieval -> Frontend display
+Dramatiq enqueue (extraction) -> Worker spans tasks:
+fetch -> parse/extract -> evaluate -> audit -> finalize
+Results -> DB + S3/MinIO -> API retrieval -> Frontend display
 ```
 
 ## Frontend Guidelines
@@ -83,8 +83,6 @@ Use curated specs in `prompts/` for consistent AI‑assisted changes:
 
 Global behavioral rules live in `.github/copilot-instructions.md`. In Copilot Chat reference them with `@workspace` + `#folder`/`#file` context markers.
 
-yarn global add pnpm # if pnpm not installed
- 
 ## Quick Start
 
 ```bash
@@ -96,11 +94,11 @@ pnpm install
 printf "Creating venv..." && python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
 
-# Start infra & backend (compose dev file)
-docker compose -f backend/docker-compose.dev.yml up -d
+# Start full stack (backend infra, API, worker, optional frontend)
+./scripts/start-dev.sh --env-stub
 
-# Frontend dev server
-pnpm --filter frontend dev
+# (Alt) Start only backend (then run pnpm dev separately)
+./scripts/start-dev.sh --no-frontend
 
 # (Alt) Run API locally (if not via compose)
 uvicorn backend.app.api.main:app --reload
