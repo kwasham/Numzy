@@ -48,11 +48,14 @@ except Exception:  # pragma: no cover - non-fatal
 
 
 class ExtractionService:
-    """Service responsible for extracting structured receipt details."""
+    """Service responsible for extracting structured receipt details.
+
+    Diagnostic logging can be enabled by setting env var EXTRACTION_DEBUG=1.
+    """
 
     def __init__(self) -> None:
-        # Configure the default model used for extraction
         self.model: str = "gpt-4o-mini"
+        self.debug: bool = os.getenv("EXTRACTION_DEBUG", "0").lower() in {"1", "true", "yes"}
 
     def _image_to_base64(self, data: bytes) -> str:
         """Encode raw image bytes as a base64 string."""
@@ -82,9 +85,10 @@ class ExtractionService:
         b64 = self._image_to_base64(processed)
         # Build the agent with the default or custom prompt
         instructions = prompt or get_default_extraction_prompt()
-        # ------------------------------
-        # Primary path: Agents SDK
-        # ------------------------------
+        if self.debug:
+            logger.info("[extraction] starting extract filename=%s size=%d model=%s", filename, len(file_data), model_name)
+
+        # ------------------------------ Primary path: Agents SDK ------------------------------
         try:
             from agents import Agent, Runner  # type: ignore
 
@@ -111,13 +115,16 @@ class ExtractionService:
                 },
             ]
             result = await Runner.run(agent, messages)
+            if self.debug:
+                logger.info("[extraction] Agents SDK succeeded")
             return result.final_output
         except Exception as exc:
-            logger.warning(f"Agents SDK path failed ({exc}); falling back to OpenAI Responses API structured extraction")
+            if self.debug:
+                logger.warning("[extraction] Agents SDK failed: %s", exc)
+            else:
+                logger.warning(f"Agents SDK path failed ({exc}); falling back to OpenAI Responses API structured extraction")
 
-        # ------------------------------
-        # Fallback path: OpenAI Responses API with JSON schema
-        # ------------------------------
+        # ------------------------------ Fallback 1: OpenAI Responses API with JSON schema ------------------------------
         try:
             from openai import OpenAI  # type: ignore
             client = OpenAI()
@@ -125,6 +132,8 @@ class ExtractionService:
             # Build JSON schema from Pydantic model (simplify nested defs for OpenAI constraints)
             schema: dict[str, Any] = ReceiptDetails.model_json_schema()
             # Ensure top-level name
+            if self.debug:
+                logger.info("[extraction] attempting Responses API fallback")
             response = client.responses.create(
                 model=model_name,
                 input=[
@@ -148,31 +157,84 @@ class ExtractionService:
 
             # Extract JSON text from response
             raw_json_text = ""
-            try:
-                for block in getattr(response, "output", []) or []:  # type: ignore[attr-defined]
-                    for piece in getattr(block, "content", []) or []:
-                        if getattr(piece, "type", None) == "output_text":
+            try:  # cope with evolving SDK structure
+                # Newer SDKs: response.output is list of blocks
+                output_blocks = getattr(response, "output", []) or []  # type: ignore[attr-defined]
+                for block in output_blocks:
+                    block_content = getattr(block, "content", []) or []
+                    for piece in block_content:
+                        p_type = getattr(piece, "type", None)
+                        if p_type in ("output_text", "text"):
                             raw_json_text += getattr(piece, "text", "")
-                if not raw_json_text and hasattr(response, "output_text"):
-                    raw_json_text = response.output_text  # type: ignore[attr-defined]
-            except Exception:
-                pass
+                        elif p_type == "tool_call" and self.debug:
+                            logger.info("[extraction] responses tool_call piece ignored")
+                if not raw_json_text:
+                    # Some SDK versions expose consolidated output_text
+                    raw_json_text = getattr(response, "output_text", "")  # type: ignore[attr-defined]
+            except Exception as ie:
+                if self.debug:
+                    logger.warning("[extraction] responses content traversal error: %s", ie)
 
             if not raw_json_text:
-                logger.error("Responses fallback produced no text; returning empty details")
-                return ReceiptDetails()
+                if self.debug:
+                    logger.warning("[extraction] Responses fallback produced no text; will try Chat Completions fallback")
+                else:
+                    logger.error("Responses fallback produced no text; trying next fallback")
+                raise RuntimeError("empty responses output")
 
             try:
                 data = json.loads(raw_json_text)
             except json.JSONDecodeError as je:
-                logger.error(f"JSON decode failed on responses output: {je}; returning empty details")
-                return ReceiptDetails()
+                if self.debug:
+                    logger.warning("[extraction] responses JSON decode failed: %s", je)
+                raise
 
             try:
-                return ReceiptDetails.model_validate(data)
+                rd = ReceiptDetails.model_validate(data)
+                if self.debug:
+                    logger.info("[extraction] Responses fallback succeeded")
+                return rd
             except Exception as ve:
-                logger.error(f"Validation of responses output failed: {ve}; returning empty details")
-                return ReceiptDetails()
+                if self.debug:
+                    logger.warning("[extraction] responses validation failed: %s", ve)
+                raise
         except Exception as exc2:
-            logger.error(f"Responses API fallback failed: {exc2}; returning empty details")
+            if self.debug:
+                logger.warning("[extraction] Responses fallback failed: %s", exc2)
+
+        # ------------------------------ Fallback 2: Chat Completions with JSON schema ------------------------------
+        try:
+            from openai import OpenAI  # type: ignore
+            client2 = OpenAI()
+            if self.debug:
+                logger.info("[extraction] attempting Chat Completions fallback")
+            schema = ReceiptDetails.model_json_schema()
+            chat_resp = client2.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                            {"type": "text", "text": instructions + "\nReturn ONLY JSON that matches the schema."},
+                        ],
+                    }
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "ReceiptDetails", "schema": schema, "strict": True},
+            })
+            json_text = chat_resp.choices[0].message.content  # type: ignore[attr-defined]
+            if isinstance(json_text, list):  # some SDK versions return list of parts
+                json_text = "".join(getattr(p, "text", "") for p in json_text)
+            data2 = json.loads(json_text)
+            rd2 = ReceiptDetails.model_validate(data2)
+            if self.debug:
+                logger.info("[extraction] Chat completions fallback succeeded")
+            return rd2
+        except Exception as exc3:
+            if self.debug:
+                logger.error("[extraction] All extraction paths failed: %s", exc3)
+            else:
+                logger.error(f"All extraction paths failed: {exc3}")
             return ReceiptDetails()
