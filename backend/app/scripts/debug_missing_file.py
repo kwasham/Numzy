@@ -17,12 +17,19 @@ from sqlalchemy import select
 # Ensure 'app' package (backend/app) is importable when run from repo root.
 # We insert backend/app's parent (backend) so imports like 'app.core.database' work.
 _THIS = Path(__file__).resolve()
-_BACKEND_DIR = _THIS.parents[3]  # .../backend
+# Directory layout: backend/app/scripts/debug_missing_file.py
+# parents[0]=scripts, [1]=app, [2]=backend, [3]=repo root
+_BACKEND_DIR = _THIS.parents[2]  # backend directory containing the 'app' package
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from app.core.database import engine  # type: ignore
-from app.models.tables import Receipt  # type: ignore
+try:
+    from app.core.database import engine  # type: ignore
+    from app.models.tables import Receipt  # type: ignore
+except ModuleNotFoundError as e:
+    print("Import failure: ", e)
+    print("sys.path=", sys.path)
+    raise
 
 
 def main():
