@@ -23,15 +23,15 @@ The repo also ships a prompt‑driven developer workflow (see `prompts/` and `.g
 
 ## Tech Stack
 
-| Area | Technologies |
-|------|--------------|
-| Frontend | Next.js (App Router), React, TypeScript, MUI v7 |
-| Backend API | FastAPI (async), SQLAlchemy async, Pydantic |
-| Workers | Dramatiq (Redis broker) |
-| Storage | MinIO (S3 API), Local filesystem for dev artifacts |
-| Observability | Sentry (API, worker, frontend) |
-| Auth (planned) | Clerk |
-| Package Mgmt | pnpm workspaces + Python `requirements.txt` |
+| Area           | Technologies                                       |
+| -------------- | -------------------------------------------------- |
+| Frontend       | Next.js (App Router), React, TypeScript, MUI v7    |
+| Backend API    | FastAPI (async), SQLAlchemy async, Pydantic        |
+| Workers        | Dramatiq (Redis broker)                            |
+| Storage        | MinIO (S3 API), Local filesystem for dev artifacts |
+| Observability  | Sentry (API, worker, frontend)                     |
+| Auth (planned) | Clerk                                              |
+| Package Mgmt   | pnpm workspaces + Python `requirements.txt`        |
 
 ## Repository Structure
 
@@ -177,16 +177,17 @@ TBD (add license file / notice).
 
 ## Quick Prompt Reference
 
-| Task | Spec |
-|------|------|
+| Task             | Spec                          |
+| ---------------- | ----------------------------- |
 | Add API endpoint | `prompts/fastapi-endpoint.md` |
-| New worker job | `prompts/dramatiq-job.md` |
-| Storage flow | `prompts/storage-minio.md` |
-| Observability | `prompts/observability.md` |
-| Next.js page | `prompts/next-page.md` |
-| UI Component | `prompts/mui-component.md` |
-| Tests | `prompts/tests.md` |
-| Review | `prompts/review.md` |
+| New worker job   | `prompts/dramatiq-job.md`     |
+| Storage flow     | `prompts/storage-minio.md`    |
+| Observability    | `prompts/observability.md`    |
+| Next.js page     | `prompts/next-page.md`        |
+| UI Component     | `prompts/mui-component.md`    |
+| Tests            | `prompts/tests.md`            |
+| Review           | `prompts/review.md`           |
 
 ---
+
 Extend this README with diagrams (ERD, sequence) or env templates as they mature; keep sections concise & action‑oriented.

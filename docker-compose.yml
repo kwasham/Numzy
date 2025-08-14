@@ -1,13 +1,4 @@
-# NOTE: All services use 'profiles'. If you run `docker compose up` without specifying
-# at least one active profile (via --profile or COMPOSE_PROFILES env var), you'll see
-# 'no service selected'. Common dev profiles:
-#   app   -> api, worker, redis, minio, mcp
-#   infra -> redis, minio
-#   local-db -> postgres (local Postgres instead of Neon)
-# Examples:
-#   COMPOSE_PROFILES=app,infra docker compose up -d --build
-#   docker compose --profile app --profile infra up -d --build
-#   docker compose --profile app --profile local-db up -d --build (if you want local postgres)
+version: "3.9"
 
 services:
   # Optional PostgreSQL for local development (use profile local-db)
@@ -68,13 +59,12 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
-      - ./storage:/app/storage # persist uploaded files
     ports:
       - "8000:8000"
     env_file:
       - ./.env
     environment:
-      DEV_AUTH_BYPASS: "false" # disable bypass so real Clerk IDs are used
+      DEV_AUTH_BYPASS: "true"
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       # Default to local postgres if profile local-db is used; otherwise Neon via .env
@@ -109,7 +99,6 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
-      - ./storage:/app/storage # shared storage mount
     env_file:
       - ./.env
     environment:
@@ -118,7 +107,7 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      DEV_AUTH_BYPASS: "false"
+      DEV_AUTH_BYPASS: "true"
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
     depends_on:
       - api

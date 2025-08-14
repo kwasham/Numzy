@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useAuth } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
@@ -14,21 +13,13 @@ import { Previewer } from "@/components/widgets/previewer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function uploadOne(file, token) {
+async function uploadOne(file) {
 	const form = new FormData();
 	form.append("file", file);
-	const headers = {};
-	if (token) headers.Authorization = `Bearer ${token}`;
-	let res;
-	try {
-		res = await fetch(`${API_URL}/receipts`, {
-			method: "POST",
-			body: form,
-			headers,
-		});
-	} catch (error) {
-		throw new Error(`Network error: ${(error && error.message) || "failed to fetch"}`);
-	}
+	const res = await fetch(`${API_URL}/receipts`, {
+		method: "POST",
+		body: form,
+	});
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		throw new Error(text || `Upload failed (${res.status})`);
@@ -39,7 +30,6 @@ async function uploadOne(file, token) {
 export function ReceiptUploadWidget() {
 	const [files, setFiles] = React.useState([]);
 	const [uploading, setUploading] = React.useState(false);
-	const { getToken, isSignedIn } = useAuth();
 
 	const onDrop = React.useCallback((accepted) => {
 		// Only keep images, enforce size <= 10MB, like the API
@@ -61,13 +51,7 @@ export function ReceiptUploadWidget() {
 		setUploading(true);
 		try {
 			const first = files[0];
-			let token = null;
-			try {
-				if (isSignedIn) token = await getToken();
-			} catch (error) {
-				console.warn("Unable to get Clerk token", error);
-			}
-			const data = await uploadOne(first, token);
+			const data = await uploadOne(first);
 			toast.success(`Uploaded: ${first.name}`);
 			// Optionally, you could route to a detail page if your app supports it
 			clearAll();

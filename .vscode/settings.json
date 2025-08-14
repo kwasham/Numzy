@@ -1,22 +1,24 @@
 {
+  "python-envs.defaultEnvManager": "ms-python.python:pyenv",
+  "python-envs.pythonProjects": [],
+  "python.testing.pytestArgs": ["receipt_processing_api"],
   "python.testing.unittestEnabled": false,
   "python.testing.pytestEnabled": true,
-  // backend/pytest.ini defines discovery; no explicit pytestArgs needed
   "emeraldwalk.runonsave": {
     "commands": [
       {
         "match": "backend/app/models/schemas.py",
-        "cmd": "python scripts/generate_types.py"
+        "cmd": "pnpm generate:types"
       }
     ]
   },
-  "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "editor.formatOnSave": true,
   "editor.codeActionsOnSave": {
-    "source.fixAll.eslint": "explicit",
-    "source.organizeImports": "explicit"
+    "source.fixAll.eslint": true,
+    "source.organizeImports": true
   },
-  "files.autoSave": "afterDelay",
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "files.autoSave": "onWindowChange",
   "files.exclude": {
     "**/.next": true,
     "**/node_modules": true,
@@ -25,11 +27,17 @@
   },
   "files.watcherExclude": {
     "**/.next/**": true,
-    "**/node_modules/**": true,
+    "**/node_modules/**": true
   },
+
   "editor.tabSize": 2,
   "editor.insertSpaces": true,
   "editor.detectIndentation": false,
+  "files.autoSave": "onWindowChange",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  },
   "eslint.validate": [
     "javascript",
     "javascriptreact",
@@ -37,6 +45,17 @@
     "typescriptreact",
     "json"
   ],
+  "files.exclude": {
+    "**/.next": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/build": true
+  },
+  "files.watcherExclude": {
+    "**/.next/**": true,
+    "**/node_modules/**": true
+  },
+
   "github.copilot.chat.codeGeneration.useInstructionFiles": true,
   "chat.promptFiles": true,
   "chat.promptFilesLocations": {
