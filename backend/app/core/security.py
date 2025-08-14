@@ -27,7 +27,7 @@ from sqlalchemy.future import select
 from app.core.database import get_db
 from app.models.tables import User, PlanType
 from datetime import datetime
-from app.models.enums import PlanType
+import logging
 from app.core.config import settings
 
 import os
@@ -55,9 +55,14 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
     request: Request = None
 ) -> User:
-    """Get current user from JWT or create dev user in dev mode."""
-    
+    """Get current user from JWT or create dev user in dev mode.
+
+    Adds lightweight debug logging (info level) so we can see which path executed
+    when diagnosing mismatched Clerk vs Dev user records.
+    """
+
     if settings.DEV_AUTH_BYPASS:
+        logging.getLogger(__name__).info("Auth bypass active; returning Dev User placeholder")
         # Check if dev user exists
         result = await db.execute(
             select(User).where(User.email == "dev@example.com")
@@ -79,6 +84,9 @@ async def get_current_user(
         return user
     
 
+    auth_header = request.headers.get("Authorization") if request else None
+    if not auth_header:
+        logging.getLogger(__name__).warning("Missing Authorization header while DEV_AUTH_BYPASS disabled")
     credentials = auth_scheme(request)
 
     token = credentials.credentials
@@ -96,6 +104,7 @@ async def get_current_user(
         if not clerk_user_id:
             raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
     except Exception as e:
+        logging.getLogger(__name__).warning(f"JWT decode failed: {e}")
         raise HTTPException(status_code=401, detail=f"Invalid Clerk token: {str(e)}")
 
     # Fetch Clerk user info
