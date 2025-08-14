@@ -60,6 +60,7 @@ Results -> DB + S3/MinIO -> API retrieval -> Frontend display
 - Prefer Server Components; mark interactive ones with `"use client"`.
 - Keep server actions in component files or sibling `actions.ts`.
 - Provide accessible components (ARIA roles/labels, keyboard focus states).
+- Temporary note: current routes still live under `frontend/src/app/` (legacy template). A minimal `src/app/page.js` now redirects `/` to `/dashboard`. Gradually migrate required routes into the top-level `app/` (remove `src/app` afterwards).
 
 ## Observability
 
