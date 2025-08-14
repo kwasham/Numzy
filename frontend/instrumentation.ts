@@ -1,4 +1,4 @@
-import * as Sentry from '@sentry/nextjs';
+import * as Sentry from "@sentry/nextjs";
 
 // Canonical instrumentation entrypoint (only keep this file; remove duplicates under app/).
 export async function register() {
@@ -11,20 +11,25 @@ export async function register() {
 		profilesSampleRate: Number(process.env.SENTRY_PROFILES_SAMPLE_RATE ?? 0),
 		release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || process.env.SENTRY_RELEASE,
 		environment: process.env.NODE_ENV,
+		autoInstrument: {
+			http: false,
+			graphql: false,
+			socketio: false,
+			fetch: true, // keep minimal useful client spans if traces enabled later
+		},
 		beforeSend(event) {
 			if (event.request?.headers) {
 				const h = event.request.headers;
-				delete h['authorization'];
-				delete h['cookie'];
+				delete h["authorization"];
+				delete h["cookie"];
 			}
 			return event;
 		},
 	});
 
 	try {
-		Sentry.setTags({ ui_lib: 'mui' });
+		Sentry.setTags({ ui_lib: "mui" });
 	} catch {
 		// ignore
 	}
 }
-
