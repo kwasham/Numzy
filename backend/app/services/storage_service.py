@@ -118,4 +118,14 @@ def load_file_from_storage(file_path: str) -> bytes:
         print(f"Fallback check at: {legacy_path}")
         if legacy_path.exists():
             return legacy_path.read_bytes()
-        raise ValueError(f"File not found: {file_path}")
+        # Provide richer diagnostics to surface root cause in task_error
+        context = {
+            "requested_relative": file_path,
+            "resolved_full_path": str(full_path),
+            "base_dir": str(storage.base_dir),
+            "base_dir_exists": storage.base_dir.exists(),
+            "legacy_checked": str(legacy_path),
+            "legacy_exists": legacy_path.exists(),
+            "cwd": str(Path.cwd()),
+        }
+        raise ValueError(f"File not found: {file_path} | context={context}")
