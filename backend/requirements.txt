@@ -29,3 +29,5 @@ mcp>=1.2.0,<2.0.0
 
 # Some environments default to psycopg2; include it to avoid import errors
 psycopg2-binary==2.9.9
+
+openai-agents

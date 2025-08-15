@@ -72,6 +72,8 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET_NAME: receipts
+      STORAGE_BACKEND: minio
     depends_on:
       - redis
       - minio
@@ -107,6 +109,8 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET_NAME: receipts
+      STORAGE_BACKEND: minio
       DEV_AUTH_BYPASS: "true"
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
     depends_on:

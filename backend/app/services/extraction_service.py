@@ -37,14 +37,14 @@ if _api_key:
     os.environ.setdefault("OPENAI_API_KEY", _api_key)
 
 # Try to configure the optional Agents SDK if present
+HAS_AGENTS = False
 try:  # optional dependency
     from agents import set_default_openai_api  # type: ignore
-    # Ensure the Agents SDK uses the Responses API rather than chat completions
     set_default_openai_api("responses")
-    # Disable logging of model data to avoid leaking receipt content
     os.environ["OPENAI_AGENTS_DONT_LOG_MODEL_DATA"] = "1"
-except Exception:  # pragma: no cover - non-fatal
-    pass
+    HAS_AGENTS = True
+except Exception:
+    HAS_AGENTS = False
 
 
 class ExtractionService:
@@ -54,8 +54,11 @@ class ExtractionService:
     """
 
     def __init__(self) -> None:
-        self.model: str = "gpt-4o-mini"
+        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-4o-mini")
         self.debug: bool = os.getenv("EXTRACTION_DEBUG", "0").lower() in {"1", "true", "yes"}
+        self.agents_available = HAS_AGENTS
+        if self.debug:
+            logger.info("[extraction:init] model=%s agents_available=%s", self.model, self.agents_available)
 
     def _image_to_base64(self, data: bytes) -> str:
         """Encode raw image bytes as a base64 string."""
@@ -89,40 +92,43 @@ class ExtractionService:
             logger.info("[extraction] starting extract filename=%s size=%d model=%s", filename, len(file_data), model_name)
 
         # ------------------------------ Primary path: Agents SDK ------------------------------
-        try:
-            from agents import Agent, Runner  # type: ignore
-
-            agent = Agent(
-                name="receipt_extraction_agent",
-                instructions=instructions,
-                model=model_name,
-                output_type=ReceiptDetails,
-            )
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_image",
-                            "detail": "auto",
-                            "image_url": f"data:image/jpeg;base64,{b64}",
-                        },
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": "Extract the receipt details from this image according to the ReceiptDetails schema.",
-                },
-            ]
-            result = await Runner.run(agent, messages)
+        if self.agents_available:
+            try:
+                from agents import Agent, Runner  # type: ignore
+                agent = Agent(
+                    name="receipt_extraction_agent",
+                    instructions=instructions,
+                    model=model_name,
+                    output_type=ReceiptDetails,
+                )
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "detail": "auto",
+                                "image_url": f"data:image/jpeg;base64,{b64}",
+                            },
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": "Extract the receipt details from this image according to the ReceiptDetails schema.",
+                    },
+                ]
+                result = await Runner.run(agent, messages)
+                if self.debug:
+                    logger.info("[extraction] Agents SDK succeeded")
+                return result.final_output
+            except Exception as exc:
+                if self.debug:
+                    logger.warning("[extraction] Agents SDK failed: %s", exc)
+                else:
+                    logger.warning(f"Agents SDK path failed ({exc}); falling back to OpenAI Responses API structured extraction")
+        else:
             if self.debug:
-                logger.info("[extraction] Agents SDK succeeded")
-            return result.final_output
-        except Exception as exc:
-            if self.debug:
-                logger.warning("[extraction] Agents SDK failed: %s", exc)
-            else:
-                logger.warning(f"Agents SDK path failed ({exc}); falling back to OpenAI Responses API structured extraction")
+                logger.info("[extraction] Agents SDK not available; skipping directly to Responses fallback")
 
         # ------------------------------ Fallback 1: OpenAI Responses API with JSON schema ------------------------------
         try:

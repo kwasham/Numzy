@@ -277,6 +277,19 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         else:
             receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
         rec.extracted_data = receipt_details.model_dump()
+        # Debug: warn if extraction returned an empty structure
+        try:
+            if not any([
+                rec.extracted_data.get("merchant"),
+                rec.extracted_data.get("items"),
+                rec.extracted_data.get("total"),
+                rec.extracted_data.get("subtotal"),
+                rec.extracted_data.get("tax"),
+                rec.extracted_data.get("handwritten_notes"),
+            ]):
+                print(f"[extraction][warn] Empty extraction result for receipt {receipt_id}; debug={list(rec.extracted_data.keys())}")
+        except Exception:
+            pass
         rec.extraction_progress = 100
         job.progress = 60
         session.commit()

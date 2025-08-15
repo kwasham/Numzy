@@ -33,7 +33,9 @@ class StorageService:
     """Unified storage service (MinIO or filesystem)."""
 
     def __init__(self, base_dir: str | None = None) -> None:
-        self.backend = (settings.STORAGE_BACKEND or "minio").lower()
+        requested_backend = (settings.STORAGE_BACKEND or "minio").lower()
+        self.backend = requested_backend
+        print(f"[storage:init] requested_backend={requested_backend} Minio_imported={Minio is not None}")
         if self.backend == "minio" and Minio is not None:
             self._client = Minio(
                 settings.MINIO_ENDPOINT,
@@ -48,9 +50,15 @@ class StorageService:
                     self._client.make_bucket(self.bucket)  # type: ignore[attr-defined]
             except Exception as e:  # pragma: no cover - startup path
                 print(f"[storage] MinIO bucket ensure failed: {e}")
+            else:
+                print(f"[storage:init] Using MinIO backend bucket={self.bucket} endpoint={settings.MINIO_ENDPOINT}")
         else:
             # Fallback to filesystem
             self.backend = "filesystem"
+            if requested_backend == "minio" and Minio is None:
+                print("[storage:init][warn] Falling back to filesystem because 'minio' package not available. Install dependency or rebuild image.")
+            elif requested_backend == "minio":
+                print("[storage:init][warn] Falling back to filesystem due to unknown MinIO init failure.")
             base_dir_str = base_dir or settings.STORAGE_DIRECTORY
             base_path = Path(base_dir_str)
             if not base_path.is_absolute():
