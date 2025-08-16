@@ -49,6 +49,7 @@ export const paths = {
 	},
 	dashboard: {
 		overview: "/dashboard",
+		receipts: "/dashboard/receipts",
 		settings: {
 			account: "/dashboard/settings/account",
 			billing: "/dashboard/settings/billing",

@@ -19,6 +19,12 @@ export const dashboardConfig = {
 			title: "General",
 			items: [
 				{
+					key: "receipts",
+					title: "Receipts",
+					icon: "upload",
+					items: [{ key: "receipts:list", title: "List receipts", href: paths.dashboard.receipts }],
+				},
+				{
 					key: "settings",
 					title: "Settings",
 					href: paths.dashboard.settings.account,
