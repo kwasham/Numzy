@@ -24,7 +24,7 @@ except Exception as e:  # pragma: no cover
 
 @router.post("/checkout")
 async def create_checkout_session(
-    price_id: str = Body(..., embed=True),
+    price_id: str | None = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_user),
 ):
@@ -39,6 +39,11 @@ async def create_checkout_session(
         raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
 
     stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    # Choose price: prefer request body, fallback to configured PRO monthly
+    chosen_price = price_id or settings.STRIPE_PRICE_PRO_MONTHLY
+    if not chosen_price:
+        raise HTTPException(status_code=400, detail="Missing price_id and no default configured")
 
     # Ensure we have a customer for this user
     customer_id = getattr(user, "stripe_customer_id", None)
@@ -59,7 +64,7 @@ async def create_checkout_session(
         session = stripe.checkout.Session.create(  # type: ignore
             mode="subscription",
             customer=customer_id,
-            line_items=[{"price": price_id, "quantity": 1}],
+            line_items=[{"price": chosen_price, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
             client_reference_id=getattr(user, "clerk_id", None),
@@ -88,15 +93,26 @@ async def create_billing_portal_session(
 
     customer_id = getattr(user, "stripe_customer_id", None)
     if not customer_id:
-        # Best-effort: create customer and backfill to allow managing billing details
+        # Try to find existing Stripe customer by email first
         try:
-            cust = stripe.Customer.create(email=user.email)  # type: ignore
-            customer_id = cust["id"]
-            user.stripe_customer_id = customer_id
-            await db.commit()
+            found = stripe.Customer.list(email=user.email, limit=1)  # type: ignore
+            data = found.get("data", []) if isinstance(found, dict) else []
+            if data:
+                customer_id = data[0]["id"]
+                user.stripe_customer_id = customer_id
+                await db.commit()
         except Exception as e:  # pragma: no cover
-            logger.exception("Failed to create Stripe customer: %s", e)
-            raise HTTPException(status_code=500, detail="Unable to initialize billing portal")
+            logger.warning("Stripe customer search by email failed for %s: %s", user.email, e)
+        if not customer_id:
+            # Best-effort: create customer and backfill to allow managing billing details
+            try:
+                cust = stripe.Customer.create(email=user.email)  # type: ignore
+                customer_id = cust["id"]
+                user.stripe_customer_id = customer_id
+                await db.commit()
+            except Exception as e:  # pragma: no cover
+                logger.exception("Failed to create Stripe customer for %s: %s", user.email, e)
+                raise HTTPException(status_code=500, detail="Unable to initialize billing portal")
 
     try:
         session = stripe.billing_portal.Session.create(  # type: ignore
