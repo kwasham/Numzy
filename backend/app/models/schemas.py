@@ -112,6 +112,7 @@ class UserRead(BaseModel):
     id: int
     clerk_id: str
     email: str
+    stripe_customer_id: Optional[str] = None
     name: str
     plan: PlanType
     created_at: datetime
@@ -134,6 +135,7 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     plan: Optional[PlanType] = None
+    stripe_customer_id: Optional[str] = None
 
     @validator('name')
     def sanitize_name(cls, v):

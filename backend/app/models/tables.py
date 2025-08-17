@@ -43,6 +43,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     clerk_id = Column(String, unique=True, nullable=False)
     email = Column(String, unique=True, nullable=False)
+    # Stripe customer reference for billing webhooks (e.g., "cus_...")
+    stripe_customer_id = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
     plan = Column(Enum(PlanType), nullable=False, default=PlanType.FREE)
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)

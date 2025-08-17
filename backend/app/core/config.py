@@ -113,6 +113,10 @@ class Settings(BaseSettings):
     
     # Stripe
     STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRET")
+    # Optional: known price IDs to map to plans
+    STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_MONTHLY")
+    STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_YEARLY")
+    STRIPE_PRICE_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_TEAM_MONTHLY")
     
     # Legacy Config class no longer required; using model_config above
 
