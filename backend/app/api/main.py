@@ -25,6 +25,7 @@ from app.api.routes.users import router as users_router
 from app.api.routes.teams import router as teams_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.events import router as events_router
+from app.api.routes.stripe_webhooks import router as stripe_webhooks_router
 from fastapi.exception_handlers import RequestValidationError
 from app.api.error_handlers import validation_exception_handler, generic_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,6 +102,7 @@ app.include_router(users_router)
 app.include_router(teams_router, prefix="/teams", tags=["teams"])
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(events_router)
+app.include_router(stripe_webhooks_router)
 
 @app.get("/")
 async def root():

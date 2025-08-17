@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # Optional Sentry release name to tag backend/worker events consistently with frontend
     SENTRY_RELEASE: Optional[str] = Field(default=None, env="SENTRY_RELEASE")
     
+    # Stripe
+    STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRET")
+    
     # Legacy Config class no longer required; using model_config above
 
 settings = Settings()
