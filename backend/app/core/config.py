@@ -101,6 +101,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(default="changeme", env="SECRET_KEY")
     STRIPE_API_KEY: Optional[str] = Field(default=None, env="STRIPE_API_KEY")
     NEXT_PUBLIC_API_URL: Optional[str] = Field(default=None, env="NEXT_PUBLIC_API_URL")
+    # Frontend base URL used for Stripe redirects
+    FRONTEND_BASE_URL: str = Field(default="http://localhost:3000", env="FRONTEND_BASE_URL")
     # Dev DB fallback (fail fast by default)
     DB_DEV_FALLBACK_SQLITE: bool = Field(default=False, env="DB_DEV_FALLBACK_SQLITE")
     

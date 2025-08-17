@@ -129,6 +129,21 @@ async def stripe_webhook(request: Request):
                 event_type, sub_id, status, customer, price_id, product_id, current_period_end, cancel_at, canceled_at,
             )
 
+            # If subscription was deleted or set to canceled, downgrade user to FREE
+            try:
+                if customer and (event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid")):
+                    async with AsyncSessionLocal() as session:
+                        user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
+                        if user and getattr(user, "plan", None) != PlanType.FREE:
+                            user.plan = PlanType.FREE
+                            await session.commit()
+                            logger.info(
+                                "[stripe] downgraded user id=%s email=%s to FREE due to subscription %s",
+                                getattr(user, "id", None), getattr(user, "email", None), sub_id,
+                            )
+            except Exception as db_ex:  # pragma: no cover
+                logger.exception("[stripe] failed to downgrade on subscription deletion: %s", db_ex)
+
         elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
