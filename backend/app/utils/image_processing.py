@@ -14,6 +14,11 @@ from io import BytesIO
 from typing import Optional
 
 try:
+    import fitz  # PyMuPDF for PDF rasterization
+except Exception:  # pragma: no cover
+    fitz = None  # type: ignore
+
+try:
     from PIL import Image
 except ImportError:  # pragma: no cover
     Image = None  # type: ignore
@@ -52,3 +57,64 @@ def preprocess_image(image_data: bytes, max_size: int = 1024) -> bytes:
     except Exception:
         # If anything goes wrong return original data
         return image_data
+
+
+def generate_thumbnail(data: bytes, filename: str, max_size: int = 480) -> Optional[bytes]:
+    """Generate a small JPEG thumbnail for images or PDFs.
+
+    - For PDFs, renders the first page if PyMuPDF is available.
+    - For images, resizes proportionally and converts to JPEG.
+    Returns None if generation fails.
+    """
+    # PDF path
+    if filename.lower().endswith(".pdf"):
+        if fitz is not None:
+            try:
+                doc = fitz.open(stream=data, filetype="pdf")
+                if doc.page_count < 1:
+                    return None
+                page = doc.load_page(0)
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("png")
+                # Reuse image pipeline below
+                data = img_bytes
+                # Fall through to image path
+            except Exception:
+                return None
+        else:
+            # If we cannot render PDFs, create a simple placeholder
+            if Image is None:
+                return None
+            try:
+                from PIL import ImageDraw, ImageFont  # type: ignore
+            except Exception:
+                ImageDraw = None  # type: ignore
+                ImageFont = None  # type: ignore
+            try:
+                img = Image.new("RGB", (max_size, int(max_size * 1.3)), color=(245, 245, 245))
+                draw = ImageDraw.Draw(img) if ImageDraw else None
+                text = "PDF"
+                if draw:
+                    # Rough centering
+                    w, h = draw.textsize(text) if hasattr(draw, "textsize") else (60, 20)
+                    draw.text(((img.width - w) / 2, (img.height - h) / 2), text, fill=(120, 120, 120))
+                out = BytesIO()
+                img.save(out, format="JPEG", quality=80)
+                return out.getvalue()
+            except Exception:
+                return None
+
+    if Image is None:
+        return None
+    try:
+        with Image.open(BytesIO(data)) as img:
+            img = img.convert("RGB")
+            w, h = img.size
+            scale = min(1.0, float(max_size) / float(max(w, h)))
+            if scale < 1.0:
+                img = img.resize((int(w * scale), int(h * scale)))
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=80)
+            return out.getvalue()
+    except Exception:
+        return None

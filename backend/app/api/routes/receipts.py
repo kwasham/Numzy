@@ -11,7 +11,7 @@ import base64
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -22,7 +22,8 @@ from app.models.enums import ReceiptStatus
 from app.models.schemas import ReceiptRead, ReceiptUpdate
 from app.models.tables import Receipt, BackgroundJob, User
 from app.services.billing_service import BillingService
-from app.services.storage_service import StorageService
+from app.services.storage_service import StorageService, load_file_from_storage
+from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
 from app.core.tasks import _publish_event  # lightweight publisher
 
@@ -44,8 +45,8 @@ async def upload_receipt(
         # user is already a DB instance from get_user when bypass is True; nothing extra needed
         pass
     # Check file type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image files are allowed")
+    if not file.content_type or not (file.content_type.startswith("image/") or file.content_type == "application/pdf"):
+        raise HTTPException(status_code=400, detail="Only image files or PDFs are allowed")
     
     # Check file size (10MB limit)
     file_size = 0
@@ -111,8 +112,8 @@ async def upload_receipts_batch(
 
     for f in files:
         # Validate content type
-        if not f.content_type or not f.content_type.startswith("image/"):
-            raise HTTPException(status_code=400, detail=f"Invalid file type: {f.filename}")
+        if not f.content_type or not (f.content_type.startswith("image/") or f.content_type == "application/pdf"):
+            raise HTTPException(status_code=400, detail=f"Invalid file type (only images or PDFs): {f.filename}")
 
         # Enforce size limit (10MB)
         contents = await f.read()
@@ -315,6 +316,26 @@ async def get_receipt_download_url(
     return {"url": f"/receipts/{receipt.id}/download?{query}", "expires_in": expires_in}
 
 
+@router.get("/{receipt_id}/thumbnail_url")
+async def get_receipt_thumbnail_url(
+    receipt_id: int,
+    expires_in: int = 300,
+    db: AsyncSession = Depends(get_db_session),
+    user = Depends(get_user),
+) -> Dict[str, Any]:
+    """Generate a short‑lived signed URL to download a small thumbnail image."""
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    expires_in = max(60, min(expires_in, 86400))
+    exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
+    sig = _sign_download_token(receipt.id, exp_ts, settings.SECRET_KEY)
+    query = urlencode({"exp": exp_ts, "sig": sig})
+    return {"url": f"/receipts/{receipt.id}/thumbnail?{query}", "expires_in": expires_in}
+
+
 @router.get("/{receipt_id}/download")
 async def download_receipt(
     receipt_id: int,
@@ -349,4 +370,38 @@ async def download_receipt(
         filename=receipt.filename or "receipt",
         media_type="application/octet-stream",
     )
+
+
+@router.get("/{receipt_id}/thumbnail")
+async def download_thumbnail(
+    receipt_id: int,
+    exp: int,
+    sig: str,
+    db: AsyncSession = Depends(get_db_session),
+    user = Depends(get_user),
+):
+    """Return a small JPEG thumbnail. Generates on first request and caches on filesystem."""
+    # Verify ownership and token
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    if now_ts > int(exp):
+        raise HTTPException(status_code=401, detail="Link expired")
+    expected = _sign_download_token(receipt_id, int(exp), settings.SECRET_KEY)
+    if not hmac.compare_digest(expected, sig):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Load original and generate thumbnail (works for filesystem and MinIO)
+    try:
+        original_bytes = load_file_from_storage(receipt.file_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    thumb = generate_thumbnail(original_bytes, receipt.filename)
+    if thumb is None:
+        # Fallback: just serve original bytes (browser can downscale)
+        return Response(content=original_bytes, media_type="application/octet-stream")
+    return Response(content=thumb, media_type="image/jpeg")
 

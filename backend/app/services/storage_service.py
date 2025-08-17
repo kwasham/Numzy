@@ -122,9 +122,9 @@ class StorageService:
         relative_key = f"{user_id}/{file_path.name}"
         return relative_key, original_name
 
-        def get_full_path(self, relative_path: str) -> Path:
-            """Resolve a stored file's full path (filesystem only)."""
-            return self.base_dir / relative_path
+    def get_full_path(self, relative_path: str) -> Path:
+        """Resolve a stored file's full path (filesystem only)."""
+        return self.base_dir / relative_path
 
 
 # Standalone function for use by background tasks

@@ -1,13 +1,17 @@
 "use client";
 
 import * as React from "react";
+import Box from "@mui/material/Box";
+import Card from "@mui/material/Card";
+import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
 
-import { ReceiptsFiltersCard } from "@/components/dashboard/receipts/receipts-filters-card";
+import { ReceiptsFilters } from "@/components/dashboard/receipts/receipts-filters";
 import { ReceiptsList } from "@/components/dashboard/receipts/receipts-list";
 import { ReceiptsPagination } from "@/components/dashboard/receipts/receipts-pagination";
+import { ReceiptsSelectionProvider } from "@/components/dashboard/receipts/receipts-selection-context";
 import { ReceiptsStats } from "@/components/dashboard/receipts/receipts-stats";
-import { ReceiptsViewModeButton } from "@/components/dashboard/receipts/view-mode-button";
+import { ReceiptsTable } from "@/components/dashboard/receipts/receipts-table";
 import { ReceiptUploadWidget } from "@/components/widgets/receipt-upload-widget";
 
 export interface ReceiptsContentProps {
@@ -21,10 +25,9 @@ export interface ReceiptsContentProps {
 		subcategory?: string;
 	};
 	sortDir?: "asc" | "desc";
-	view?: string;
 }
 
-export function ReceiptsContent({ filters, sortDir = "desc", view: _view }: ReceiptsContentProps) {
+export function ReceiptsContent({ filters, sortDir = "desc" }: ReceiptsContentProps) {
 	const [count, setCount] = React.useState(0);
 	const [page, setPage] = React.useState(0);
 	const pageSize = 10;
@@ -32,42 +35,70 @@ export function ReceiptsContent({ filters, sortDir = "desc", view: _view }: Rece
 		countAll: 0,
 		countCompleted: 0,
 		countPending: 0,
+		countProcessing: 0,
+		countFailed: 0,
 		amountAll: 0,
 		amountCompleted: 0,
 		amountPending: 0,
+		categories: [] as Array<{ category: string; amount: number; count: number }>,
 	});
+	// Row type matches the Receipt shape emitted by ReceiptsList onRowsChange
+	type ReceiptRow = {
+		id: number;
+		filename: string;
+		status: string;
+		extracted_data?: Record<string, unknown> | null;
+		audit_decision?: Record<string, unknown> | null;
+		created_at: string;
+		updated_at: string;
+		extraction_progress: number;
+		audit_progress: number;
+	};
+	const [rows, setRows] = React.useState<ReceiptRow[]>([]);
 
 	return (
 		<Stack spacing={4} sx={{ flex: "1 1 auto", minWidth: 0 }}>
-			{/* Stats at top spanning the container width via Grid inside */}
+			{/* Stats at top (keep) */}
 			<ReceiptsStats
-				totals={{ all: stats.countAll, completed: stats.countCompleted, failed: 0 }}
-				amounts={{ all: stats.amountAll, completed: stats.amountCompleted, pending: stats.amountPending }}
+				_totals={{ all: stats.countAll, completed: stats.countCompleted, failed: 0 }}
+				_amounts={{ all: stats.amountAll, completed: stats.amountCompleted, pending: stats.amountPending }}
+				categories={stats.categories}
 			/>
-			{/* Toolbar row (match invoice page style) */}
-			<Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "flex-end" }}>
-				<ReceiptsViewModeButton view={_view} />
-			</Stack>
-			{/* Main content row: filters left, list & pagination right */}
-			<Stack direction="row" spacing={4} sx={{ alignItems: "flex-start" }}>
-				<ReceiptsFiltersCard filters={filters} sortDir={sortDir} view={_view} />
-				<Stack spacing={4} sx={{ flex: "1 1 auto", minWidth: 0 }}>
-					<ReceiptsList
-						filters={filters}
-						sortDir={sortDir}
-						page={page}
-						pageSize={pageSize}
-						view={_view}
-						onCountChange={setCount}
-						onStatsChange={setStats}
-					/>
-					{_view !== "group" && (
+			{/* Table Card (Orders style) */}
+			<ReceiptsSelectionProvider receipts={rows}>
+				<Card>
+					{/* Orders-like structure: Filters at top, then table, then pagination */}
+					<Box sx={{ p: 2 }}>
+						<ReceiptsFilters filters={filters || {}} sortDir={sortDir} statusCounts={stats} />
+					</Box>
+					<Divider />
+					<Box sx={{ overflowX: "auto" }}>
+						<ReceiptsTable rows={rows} />
+					</Box>
+					<Divider />
+					<Box sx={{ p: 2 }}>
 						<ReceiptsPagination count={count} page={page} pageSize={pageSize} onPageChange={setPage} />
-					)}
-					{/* Upload widget below the table */}
+					</Box>
+				</Card>
+			</ReceiptsSelectionProvider>
+
+			{/* Headless list to fetch and compute, exposing current paged rows to parent */}
+			<ReceiptsList
+				filters={filters}
+				sortDir={sortDir}
+				page={page}
+				pageSize={pageSize}
+				onCountChange={setCount}
+				onStatsChange={setStats}
+				renderTable={false}
+				onRowsChange={setRows}
+			/>
+			{/* Uploader lives below the table card as its own component */}
+			<Card>
+				<Box sx={{ p: 2 }}>
 					<ReceiptUploadWidget />
-				</Stack>
-			</Stack>
+				</Box>
+			</Card>
 		</Stack>
 	);
 }

@@ -4,18 +4,17 @@ import React from "react";
 import { useAuth } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
-import IconButton from "@mui/material/IconButton";
 import Paper from "@mui/material/Paper";
-import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
-import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { toast } from "sonner";
+
+import { ReceiptsSelectionProvider } from "./receipts-selection-context";
+import { ReceiptsTable } from "./receipts-table";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -31,29 +30,12 @@ interface Receipt {
 	audit_progress: number;
 }
 
-function statusColor(status: string): "default" | "success" | "error" | "warning" | "info" {
-	switch (status) {
-		case "completed": {
-			return "success";
-		}
-		case "failed": {
-			return "error";
-		}
-		case "processing": {
-			return "warning";
-		}
-		default: {
-			return "default";
-		}
-	}
-}
-
 interface ReceiptsListFilters {
 	id?: string;
 	merchant?: string;
 	status?: string;
-	startDate?: string; // ISO date (yyyy-mm-dd) or full ISO string
-	endDate?: string; // ISO date (yyyy-mm-dd) or full ISO string
+	startDate?: string;
+	endDate?: string;
 	category?: string;
 	subcategory?: string;
 }
@@ -61,18 +43,25 @@ interface ReceiptsListFilters {
 interface ReceiptsListProps {
 	filters?: ReceiptsListFilters;
 	sortDir?: "asc" | "desc";
-	page?: number; // 0-based
+	page?: number;
 	pageSize?: number;
-	view?: string;
 	onCountChange?: (count: number) => void;
 	onStatsChange?: (stats: {
 		countAll: number;
 		countCompleted: number;
 		countPending: number;
+		countProcessing: number;
+		countFailed: number;
 		amountAll: number;
 		amountCompleted: number;
 		amountPending: number;
+		categories: Array<{ category: string; amount: number; count: number }>;
 	}) => void;
+	// When false, the component won't render the table UI; it will only fetch/derive data
+	// and emit callbacks (onCountChange, onStatsChange, onRowsChange).
+	renderTable?: boolean;
+	// Emits the current paged rows so a parent can render the table and wrap with selection provider.
+	onRowsChange?: (rows: Receipt[]) => void;
 }
 
 export const ReceiptsList: React.FC<ReceiptsListProps> = ({
@@ -80,9 +69,10 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 	sortDir = "desc",
 	page = 0,
 	pageSize = 10,
-	view,
 	onCountChange,
 	onStatsChange,
+	renderTable = true,
+	onRowsChange,
 }) => {
 	const { getToken } = useAuth();
 	const [receipts, setReceipts] = React.useState<Receipt[] | null>(null);
@@ -108,7 +98,6 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 			if (!res.ok) throw new Error(`Failed (${res.status})`);
 			const data: Receipt[] = await res.json();
 
-			// If we have no category/subcategory data yet, append some mock receipts in dev to aid grouped view testing.
 			const hasCategoryOrSub = (arr: Receipt[]) =>
 				arr.some((r) => {
 					const ed = (r.extracted_data ?? undefined) as undefined | Record<string, unknown>;
@@ -143,14 +132,54 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 				};
 
 				return [
-					mk(-101, "mock-groceries-2025-08-10.pdf", "Whole Foods", 76.32, "Food & Dining", "Groceries", 2),
-					mk(-102, "mock-restaurant-2025-08-11.pdf", "Chipotle", 18.5, "Food & Dining", "Restaurants", 1),
-					mk(-103, "mock-rideshare-2025-08-09.pdf", "Uber", 24.9, "Transportation", "Ride Sharing", 3),
-					mk(-104, "mock-gas-2025-08-08.pdf", "Shell", 54.21, "Transportation", "Gas", 4),
-					mk(-105, "mock-internet-2025-08-01.pdf", "Comcast", 89.99, "Utilities", "Internet", 11),
-					mk(-106, "mock-pharmacy-2025-08-07.pdf", "CVS", 12.75, "Health & Wellness", "Pharmacy", 5),
-					mk(-107, "mock-clothing-2025-08-05.pdf", "Uniqlo", 43, "Shopping", "Clothing", 7),
-					mk(-108, "mock-electronics-2025-08-06.pdf", "Best Buy", 129.99, "Electronics", "Gadgets", 6),
+					mk(
+						-101,
+						"mock-groceries-2025-08-10.pdf",
+						"Whole Foods",
+						76.32,
+						"Meals and Entertainment",
+						"Employee Meals (team outings, working lunches)",
+						2
+					),
+					mk(-102, "mock-restaurant-2025-08-11.pdf", "Chipotle", 18.5, "Meals and Entertainment", "Client Meals", 1),
+					mk(
+						-103,
+						"mock-rideshare-2025-08-09.pdf",
+						"Uber",
+						24.9,
+						"Travel Specific Expenses",
+						"Ground Transportation (Taxi, Ride-share, Rental Car)",
+						3
+					),
+					mk(-104, "mock-gas-2025-08-08.pdf", "Shell", 54.21, "Operational Expenses", "Fuel", 4),
+					mk(
+						-105,
+						"mock-internet-2025-08-01.pdf",
+						"Comcast",
+						89.99,
+						"Operational Expenses",
+						"Utilities (Electricity, Water, Internet)",
+						11
+					),
+					mk(
+						-106,
+						"mock-pharmacy-2025-08-07.pdf",
+						"CVS",
+						12.75,
+						"Other",
+						"Anything used for your business but is not a day to day expense. (Training and development, penalties or fines, bank fees)",
+						5
+					),
+					mk(
+						-107,
+						"mock-clothing-2025-08-05.pdf",
+						"Uniqlo",
+						43,
+						"Other",
+						"Anything used for your business but is not a day to day expense. (Training and development, penalties or fines, bank fees)",
+						7
+					),
+					mk(-108, "mock-electronics-2025-08-06.pdf", "Best Buy", 129.99, "Operational Expenses", "Office Supplies", 6),
 				];
 			};
 
@@ -288,9 +317,12 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		let countAll = 0;
 		let countCompleted = 0;
 		let countPending = 0;
+		let countProcessing = 0;
+		let countFailed = 0;
 		let amountAll = 0;
 		let amountCompleted = 0;
 		let amountPending = 0;
+		const catMap = new Map<string, { amount: number; count: number }>();
 
 		for (const r of derived) {
 			countAll += 1;
@@ -298,22 +330,62 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 			const totalVal = toNumber(ed?.total);
 			amountAll += totalVal;
 			const status = (r.status || "").toLowerCase();
-			if (status === "completed") {
-				countCompleted += 1;
-				amountCompleted += totalVal;
-			} else if (status === "pending" || status === "processing") {
-				countPending += 1;
-				amountPending += totalVal;
+			switch (status) {
+				case "completed": {
+					countCompleted += 1;
+					amountCompleted += totalVal;
+					break;
+				}
+				case "pending": {
+					countPending += 1;
+					amountPending += totalVal;
+					break;
+				}
+				case "processing": {
+					countPending += 1; // treat as pending for amount bucketing
+					amountPending += totalVal;
+					countProcessing += 1;
+					break;
+				}
+				case "failed": {
+					countFailed += 1;
+					break;
+				}
+				default: {
+					break;
+				}
 			}
+
+			// category tally
+			const rawCat = ed?.category as unknown;
+			const category = Array.isArray(rawCat)
+				? String(rawCat[0] ?? "Uncategorized")
+				: typeof rawCat === "string"
+					? rawCat
+					: "Uncategorized";
+			const cur = catMap.get(category) || { amount: 0, count: 0 };
+			cur.amount += totalVal;
+			cur.count += 1;
+			catMap.set(category, cur);
 		}
+
+		const categories = [...catMap.entries()]
+			.map(([category, v]) => ({ category, amount: v.amount, count: v.count }))
+			.sort((a, b) => {
+				if (a.amount === b.amount) return b.count - a.count;
+				return b.amount - a.amount;
+			});
 
 		onStatsChange({
 			countAll,
 			countCompleted,
 			countPending,
+			countProcessing,
+			countFailed,
 			amountAll,
 			amountCompleted,
 			amountPending,
+			categories,
 		});
 	}, [derived, onStatsChange]);
 
@@ -324,295 +396,35 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		return derived.slice(startIndex, endIndex);
 	}, [derived, page, pageSize]);
 
-	const grouped = React.useMemo(() => {
-		if (!derived) return null;
-		// Build category -> subcategory -> rows
-		const map = new Map<string, Map<string, Receipt[]>>();
-		for (const r of derived) {
-			const ed = (r.extracted_data ?? undefined) as undefined | Record<string, unknown>;
-			const rawCat = ed?.category as unknown;
-			const rawSub = ed?.subcategory as unknown;
-			const cat = Array.isArray(rawCat)
-				? String(rawCat[0] ?? "Uncategorized")
-				: typeof rawCat === "string"
-					? rawCat
-					: "Uncategorized";
-			const sub = Array.isArray(rawSub)
-				? String(rawSub[0] ?? "Unspecified")
-				: typeof rawSub === "string"
-					? rawSub
-					: "Unspecified";
-			if (!map.has(cat)) map.set(cat, new Map());
-			const subMap = map.get(cat)!;
-			if (!subMap.has(sub)) subMap.set(sub, []);
-			subMap.get(sub)!.push(r);
+	// Let parent know the visible rows for this page
+	React.useEffect(() => {
+		if (paged && Array.isArray(paged)) {
+			onRowsChange?.(paged);
 		}
-		// Convert to arrays for stable rendering order
-		return [...map.entries()].map(([category, subMap]) => ({
-			category,
-			subs: [...subMap.entries()].map(([subcategory, rows]) => ({ subcategory, rows })),
-		}));
-	}, [derived]);
+	}, [paged, onRowsChange]);
 
-	const refresh = async () => {
-		await fetchReceipts();
-	};
+	// Group view removed
 
-	const reprocess = async (id: number) => {
-		try {
-			let token: string | null = null;
-			try {
-				token = await getToken?.();
-			} catch {
-				/* ignored */
-			}
-			const res = await fetch(`${API_URL}/receipts/${id}/reprocess`, {
-				method: "POST",
-				headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-			});
-			if (!res.ok) throw new Error(`Reprocess failed (${res.status})`);
-			toast.success("Reprocessing queued");
-			refresh();
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			toast.error(msg || "Reprocess failed");
-		}
-	};
+	// No reprocess/download actions in list view (kept minimal)
 
-	const download = async (id: number) => {
-		try {
-			let token: string | null = null;
-			try {
-				token = await getToken?.();
-			} catch {
-				/* ignored */
-			}
-			const res = await fetch(`${API_URL}/receipts/${id}/download`, {
-				headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-			});
-			if (!res.ok) throw new Error("Download URL fetch failed");
-			const data = await res.json();
-			if (data?.url) {
-				const url = data.url.startsWith("http") ? data.url : `${API_URL}${data.url}`;
-				window.open(url, "_blank");
-			} else {
-				throw new Error("No URL returned");
-			}
-		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
-			toast.error(msg || "Download failed");
-		}
-	};
+	if (!renderTable) {
+		// Headless mode: only side-effects; parent renders the table
+		return null;
+	}
 
 	return (
 		<Stack spacing={2}>
-			{view === "group" ? (
-				<Stack spacing={3} sx={{ width: "100%" }}>
-					{loading && (
-						<Paper variant="outlined" sx={{ p: 2 }}>
-							<Typography variant="body2" color="text.secondary">
-								Loading…
-							</Typography>
-						</Paper>
-					)}
-					{!loading && (derived?.length ?? 0) === 0 && (
-						<Paper variant="outlined" sx={{ p: 2 }}>
-							<Typography variant="body2" color="text.secondary">
-								No receipts yet. Upload one above.
-							</Typography>
-						</Paper>
-					)}
-					{!loading &&
-						grouped &&
-						grouped.map(({ category, subs }) => (
-							<Stack key={category} spacing={1}>
-								<Typography variant="h6">{category}</Typography>
-								{subs.map(({ subcategory, rows }) => (
-									<Stack key={subcategory} spacing={1} sx={{ pl: 2 }}>
-										<Typography variant="subtitle2" color="text.secondary">
-											{subcategory} — {rows.length} receipt{rows.length === 1 ? "" : "s"}
-										</Typography>
-										<Paper variant="outlined" sx={{ width: "100%", overflowX: "auto" }}>
-											<Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
-												<Box component="thead" sx={{ bgcolor: "background.paper" }}>
-													<Box component="tr">
-														<Box component="th" sx={thSx}>
-															Merchant
-														</Box>
-														<Box component="th" sx={thSx}>
-															Amount
-														</Box>
-														<Box component="th" sx={thSx}>
-															Status
-														</Box>
-														<Box component="th" sx={thSx} />
-													</Box>
-												</Box>
-												<Box component="tbody">
-													{rows.map((r) => (
-														<Box component="tr" key={r.id}>
-															<Cell>{(r.extracted_data as Record<string, unknown> | undefined)?.merchant ?? "—"}</Cell>
-															<Cell>
-																{(() => {
-																	const ed = (r.extracted_data ?? undefined) as undefined | Record<string, unknown>;
-																	const raw = ed?.total as unknown;
-																	const n =
-																		typeof raw === "number"
-																			? raw
-																			: typeof raw === "string"
-																				? Number(raw.replaceAll(/[^0-9.-]+/g, ""))
-																				: 0;
-																	return Number.isFinite(n) && n !== 0 ? fmtCurrency.format(n) : "—";
-																})()}
-															</Cell>
-															<Cell>
-																<Chip
-																	size="small"
-																	label={r.status}
-																	color={statusColor(r.status)}
-																	variant={r.status === "pending" ? "outlined" : "filled"}
-																/>
-															</Cell>
-															<Cell>
-																<Stack direction="row" spacing={1}>
-																	<Tooltip title="Reprocess">
-																		<span>
-																			<IconButton
-																				size="small"
-																				onClick={() => reprocess(r.id)}
-																				disabled={r.status === "processing" || r.status === "pending"}
-																				aria-label="reprocess"
-																			>
-																				↻
-																			</IconButton>
-																		</span>
-																	</Tooltip>
-																	<Tooltip title="Download original">
-																		<span>
-																			<IconButton size="small" onClick={() => download(r.id)} aria-label="download">
-																				⭳
-																			</IconButton>
-																		</span>
-																	</Tooltip>
-																	<Button size="small" variant="outlined" onClick={() => setSelected(r)}>
-																		View
-																	</Button>
-																</Stack>
-															</Cell>
-														</Box>
-													))}
-												</Box>
-											</Box>
-										</Paper>
-									</Stack>
-								))}
-							</Stack>
-						))}
-				</Stack>
-			) : (
-				<Paper variant="outlined" sx={{ width: "100%", overflowX: "auto" }}>
-					<Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
-						<Box component="thead" sx={{ bgcolor: "background.paper" }}>
-							<Box component="tr">
-								<Box component="th" sx={thSx}>
-									Merchant
-								</Box>
-								<Box component="th" sx={thSx}>
-									Amount
-								</Box>
-								<Box component="th" sx={thSx}>
-									Status
-								</Box>
-								<Box component="th" sx={thSx} />
-							</Box>
-						</Box>
-						<Box component="tbody">
-							{loading &&
-								[1, 2, 3].map((i) => (
-									<Box component="tr" key={i}>
-										<Cell>
-											<Skeleton width={160} />
-										</Cell>
-										<Cell>
-											<Skeleton width={80} />
-										</Cell>
-										<Cell>
-											<Skeleton width={70} />
-										</Cell>
-										<Cell>
-											<Skeleton width={90} />
-										</Cell>
-									</Box>
-								))}
-							{!loading && (derived?.length ?? 0) === 0 && (
-								<Box component="tr">
-									<Cell colSpan={4}>
-										<Typography variant="body2" color="text.secondary">
-											No receipts yet. Upload one above.
-										</Typography>
-									</Cell>
-								</Box>
-							)}
-							{!loading &&
-								paged &&
-								paged.map((r) => (
-									<Box component="tr" key={r.id}>
-										<Cell>{(r.extracted_data as Record<string, unknown> | undefined)?.merchant ?? "—"}</Cell>
-										<Cell>
-											{(() => {
-												const ed = (r.extracted_data ?? undefined) as undefined | Record<string, unknown>;
-												const raw = ed?.total as unknown;
-												const n =
-													typeof raw === "number"
-														? raw
-														: typeof raw === "string"
-															? Number(raw.replaceAll(/[^0-9.-]+/g, ""))
-															: 0;
-												return Number.isFinite(n) && n !== 0 ? fmtCurrency.format(n) : "—";
-											})()}
-										</Cell>
-										<Cell>
-											<Chip
-												size="small"
-												label={r.status}
-												color={statusColor(r.status)}
-												variant={r.status === "pending" ? "outlined" : "filled"}
-											/>
-										</Cell>
-										<Cell>
-											<Stack direction="row" spacing={1}>
-												<Tooltip title="Reprocess">
-													<span>
-														<IconButton
-															size="small"
-															onClick={() => reprocess(r.id)}
-															disabled={r.status === "processing" || r.status === "pending"}
-															aria-label="reprocess"
-														>
-															↻
-														</IconButton>
-													</span>
-												</Tooltip>
-												<Tooltip title="Download original">
-													<span>
-														<IconButton size="small" onClick={() => download(r.id)} aria-label="download">
-															⭳
-														</IconButton>
-													</span>
-												</Tooltip>
-												<Button size="small" variant="outlined" onClick={() => setSelected(r)}>
-													View
-												</Button>
-											</Stack>
-										</Cell>
-									</Box>
-								))}
-						</Box>
-					</Box>
+			{loading ? (
+				<Paper variant="outlined" sx={{ p: 2 }}>
+					<Typography variant="body2" color="text.secondary">
+						Loading…
+					</Typography>
 				</Paper>
+			) : (
+				<ReceiptsSelectionProvider receipts={paged ?? []}>
+					<ReceiptsTable rows={paged ?? []} />
+				</ReceiptsSelectionProvider>
 			)}
-
-			{/* Detail dialog */}
 			<Dialog open={!!selected} onClose={() => setSelected(null)} fullWidth maxWidth="sm">
 				<DialogTitle>Receipt Details</DialogTitle>
 				<DialogContent dividers>
@@ -620,7 +432,7 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 						<Stack spacing={1}>
 							<Typography variant="body2">
 								<strong>Merchant:</strong>{" "}
-								{(selected.extracted_data as Record<string, unknown> | undefined)?.merchant ?? "—"}
+								{String((selected.extracted_data as Record<string, unknown> | undefined)?.merchant ?? "—")}
 							</Typography>
 							<Typography variant="body2">
 								<strong>Amount:</strong>{" "}
@@ -661,20 +473,5 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		</Stack>
 	);
 };
-
-const thSx = {
-	textAlign: "left",
-	p: 1,
-	fontSize: 12,
-	fontWeight: 600,
-	borderBottom: (theme) => `1px solid ${theme.palette.divider}`,
-} as const;
-const tdSx = { p: 1, fontSize: 12, borderBottom: (theme) => `1px solid ${theme.palette.divider}` } as const;
-
-const Cell: React.FC<React.PropsWithChildren<{ colSpan?: number }>> = ({ children, colSpan }) => (
-	<Box component="td" colSpan={colSpan} sx={tdSx}>
-		{children}
-	</Box>
-);
 
 export default ReceiptsList;

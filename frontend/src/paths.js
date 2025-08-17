@@ -50,6 +50,9 @@ export const paths = {
 	dashboard: {
 		overview: "/dashboard",
 		receipts: "/dashboard/receipts",
+		// helpers for receipts routes (non-breaking; receipts remains the base list path)
+		receiptsPreview: (receiptId) => `/dashboard/receipts?previewId=${receiptId}`,
+		receiptsDetails: (receiptId) => `/dashboard/receipts/${receiptId}`,
 		settings: {
 			account: "/dashboard/settings/account",
 			billing: "/dashboard/settings/billing",
