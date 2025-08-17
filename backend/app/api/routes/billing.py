@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.tables import User
 from app.api.dependencies import get_user
+from app.models.enums import PlanType
 
 import logging
 
@@ -124,3 +125,78 @@ async def create_billing_portal_session(
         raise HTTPException(status_code=500, detail="Unable to create billing portal session")
 
     return JSONResponse({"url": session["url"]})
+
+
+@router.get("/status")
+async def get_billing_status(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_user),
+):
+    """Return the current user's plan and Stripe subscription status.
+
+    - Attempts to ensure we know the stripe_customer_id by looking up by email.
+    - If a customer exists, fetch the most recent subscription and summarize its status.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    customer_id = getattr(user, "stripe_customer_id", None)
+    # Best-effort: try to locate existing customer by email
+    if not customer_id and user.email:
+        try:
+            found = stripe.Customer.list(email=user.email, limit=1)  # type: ignore
+            data = found.get("data", []) if isinstance(found, dict) else []
+            if data:
+                customer_id = data[0]["id"]
+                user.stripe_customer_id = customer_id
+                await db.commit()
+        except Exception as e:  # pragma: no cover
+            logger.warning("Stripe customer lookup failed for %s: %s", user.email, e)
+
+    subscription_summary = None
+    if customer_id:
+        try:
+            subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)  # type: ignore
+            subs_data = subs.get("data", []) if isinstance(subs, dict) else []
+            if subs_data:
+                sub = subs_data[0]
+                price_id = None
+                try:
+                    items = sub.get("items", {}).get("data", [])
+                    if items:
+                        price_id = items[0].get("price", {}).get("id")
+                except Exception:
+                    price_id = None
+                period_end = None
+                try:
+                    cpe = sub.get("current_period_end")
+                    if cpe:
+                        import datetime as _dt
+                        period_end = _dt.datetime.utcfromtimestamp(int(cpe)).isoformat() + "Z"
+                except Exception:
+                    period_end = None
+                subscription_summary = {
+                    "id": sub.get("id"),
+                    "status": sub.get("status"),
+                    "price_id": price_id,
+                    "current_period_end": period_end,
+                }
+        except Exception as e:  # pragma: no cover
+            logger.warning("Stripe subscription lookup failed for customer %s: %s", customer_id, e)
+
+    # Normalize plan to string for the frontend
+    plan_value = getattr(user, "plan", PlanType.FREE)
+    if isinstance(plan_value, PlanType):
+        plan_value = plan_value.value
+
+    return JSONResponse(
+        {
+            "plan": plan_value,
+            "stripe_customer_id": customer_id,
+            "subscription": subscription_summary,
+        }
+    )

@@ -1,4 +1,3 @@
-import * as React from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Grid from "@mui/material/Grid";
@@ -15,9 +14,11 @@ import { WarningIcon } from "@phosphor-icons/react/dist/ssr/Warning";
 
 import { appConfig } from "@/config/app";
 import { dayjs } from "@/lib/dayjs";
+import { PlanBadge } from "@/components/billing/plan-badge";
 import { AppChat } from "@/components/dashboard/overview/app-chat";
 import { AppLimits } from "@/components/dashboard/overview/app-limits";
 import { AppUsage } from "@/components/dashboard/overview/app-usage";
+import { CheckoutReturnNotifier } from "@/components/dashboard/overview/checkout-return-notifier";
 import { Events } from "@/components/dashboard/overview/events";
 import { HelperWidget } from "@/components/dashboard/overview/helper-widget";
 import { Subscriptions } from "@/components/dashboard/overview/subscriptions";
@@ -36,9 +37,11 @@ export default function Page() {
 			}}
 		>
 			<Stack spacing={4}>
-				<Stack direction={{ xs: "column", sm: "row" }} spacing={3} sx={{ alignItems: "flex-start" }}>
-					<Box sx={{ flex: "1 1 auto" }}>
+				<CheckoutReturnNotifier />
+				<Stack direction={{ xs: "column", sm: "row" }} spacing={3} sx={{ alignItems: "center" }}>
+					<Box sx={{ flex: "1 1 auto", display: "flex", gap: 1, alignItems: "center" }}>
 						<Typography variant="h4">Overview</Typography>
+						<PlanBadge />
 					</Box>
 					<div>
 						<Button startIcon={<PlusIcon />} variant="contained">

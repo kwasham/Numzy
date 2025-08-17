@@ -1,3 +1,4 @@
+import React from "react";
 import Divider from "@mui/material/Divider";
 
 import { appConfig } from "@/config/app";

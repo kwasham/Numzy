@@ -1,9 +1,10 @@
-import * as React from "react";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 
 import { appConfig } from "@/config/app";
 import { dayjs } from "@/lib/dayjs";
+import { BillingButtons } from "@/components/billing/billing-buttons";
+import { PlanBadge } from "@/components/billing/plan-badge";
 import { Invoices } from "@/components/dashboard/settings/invoices";
 import { Plans } from "@/components/dashboard/settings/plans";
 
@@ -14,9 +15,12 @@ export default function Page() {
 		<Stack spacing={4}>
 			<div>
 				<Typography variant="h4">Billing & plans</Typography>
+				<PlanBadge />
 			</div>
 			<Stack spacing={4}>
 				<Plans />
+				{/* Upgrade/Manage actions */}
+				<BillingButtons size="large" />
 				<Invoices
 					invoices={[
 						{ id: "INV-003", currency: "USD", totalAmount: 14.99, issueDate: dayjs().subtract(1, "month").toDate() },

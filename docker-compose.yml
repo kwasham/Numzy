@@ -64,7 +64,7 @@ services:
     env_file:
       - ./.env
     environment:
-      DEV_AUTH_BYPASS: "true"
+      DEV_AUTH_BYPASS: "false"
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       # Default to local postgres if profile local-db is used; otherwise Neon via .env
@@ -88,7 +88,7 @@ services:
     env_file:
       - ./.env
     environment:
-      DEV_AUTH_BYPASS: "true"
+      DEV_AUTH_BYPASS: "false"
     ports:
       - "8002:8000"
     profiles: ["app"]
@@ -111,7 +111,7 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET_NAME: receipts
       STORAGE_BACKEND: minio
-      DEV_AUTH_BYPASS: "true"
+      DEV_AUTH_BYPASS: "false"
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
     depends_on:
       - api
