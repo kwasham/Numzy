@@ -1,4 +1,4 @@
-import * as React from "react";
+import React from "react";
 import { chipClasses } from "@mui/material/Chip";
 import { XCircleIcon } from "@phosphor-icons/react/dist/ssr/XCircle";
 
@@ -33,15 +33,11 @@ export const MuiChip = {
 	},
 	styleOverrides: {
 		root: { borderRadius: "12px", fontWeight: 500 },
-		outlinedSecondary: ({ theme }) => {
-			// Custom case for secondary, the rest is handled by the theme
-
-			if (theme.palette.mode === "dark") {
-				return { borderColor: "var(--mui-palette-secondary-700)", color: "var(--mui-palette-secondary-50)" };
-			}
-
-			return { borderColor: "var(--mui-palette-secondary-200)", color: "var(--mui-palette-secondary-900)" };
-		},
+		// Use mode-agnostic CSS variables so colors auto-adapt on theme switch
+		outlinedSecondary: () => ({
+			borderColor: "var(--mui-palette-divider)",
+			color: "var(--mui-palette-text-primary)",
+		}),
 		soft: ({ ownerState }) => {
 			return {
 				backgroundColor: "var(--Chip-softBg)",
@@ -58,6 +54,11 @@ export const MuiChip = {
 				"&.Mui-focusVisible": { backgroundColor: "var(--Chip-softHoverBg)" },
 			};
 		},
+		outlinedPrimary: () => ({ borderColor: "var(--mui-palette-divider)", color: "var(--mui-palette-text-primary)" }),
+		outlinedInfo: () => ({ borderColor: "var(--mui-palette-divider)", color: "var(--mui-palette-text-primary)" }),
+		outlinedSuccess: () => ({ borderColor: "var(--mui-palette-divider)", color: "var(--mui-palette-text-primary)" }),
+		outlinedWarning: () => ({ borderColor: "var(--mui-palette-divider)", color: "var(--mui-palette-text-primary)" }),
+		outlinedError: () => ({ borderColor: "var(--mui-palette-divider)", color: "var(--mui-palette-text-primary)" }),
 		softPrimary: ({ theme }) => {
 			return getSoftVars("primary", theme.palette.mode === "dark");
 		},

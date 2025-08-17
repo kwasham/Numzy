@@ -6,129 +6,80 @@ import CardContent from "@mui/material/CardContent";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { CheckIcon } from "@phosphor-icons/react/dist/ssr/Check";
-import { ClockIcon } from "@phosphor-icons/react/dist/ssr/Clock";
-import { ReceiptIcon } from "@phosphor-icons/react/dist/ssr/Receipt";
+import { TagIcon } from "@phosphor-icons/react/dist/ssr/Tag";
 
 export function ReceiptsStats({
-	totals = { all: 0, completed: 0, failed: 0 },
-	amounts = { all: 0, completed: 0, pending: 0 },
+	_totals = { all: 0, completed: 0, failed: 0 },
+	_amounts = { all: 0, completed: 0, pending: 0 },
+	categories = [], // Array<{ category, amount, count }>
 }) {
-	const countAll = Number(totals?.all ?? 0);
-	const countCompleted = Number(totals?.completed ?? 0);
-	const countFailed = Number(totals?.failed ?? 0);
-	const countPending = Math.max(0, countAll - countCompleted - countFailed);
-
-	const amountAll = Number(amounts?.all ?? 0);
-	const amountCompleted = Number(amounts?.completed ?? 0);
-	const amountPending = Number(amounts?.pending ?? 0);
-
 	const fmtCurrency = (n) =>
 		new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(
 			Number.isFinite(n) ? n : 0
 		);
 
+	// Normalize incoming categories and fold into the five canonical buckets
+	const CANONICAL = [
+		{ key: "Cost of Goods Sold", label: "Cost of Goods Sold" },
+		{ key: "Operational Expenses", label: "Operational Expenses" },
+		{ key: "Travel Expenses", label: "Travel Expenses", aliases: ["Travel Specific Expenses"] },
+		{ key: "Meals and Entertainment", label: "Meals and Entertainment" },
+		{ key: "Other", label: "Other" },
+	];
+
+	const aliasMap = new Map();
+	for (const c of CANONICAL) {
+		aliasMap.set(c.key.toLowerCase(), c.key);
+		if (c.aliases) for (const a of c.aliases) aliasMap.set(String(a).toLowerCase(), c.key);
+	}
+
+	const sums = new Map(CANONICAL.map((c) => [c.key, { amount: 0, count: 0 }]));
+	for (const item of Array.isArray(categories) ? categories : []) {
+		const name = String(item?.category ?? "Other").toLowerCase();
+		const key = aliasMap.get(name) || (name.includes("travel") ? "Travel Expenses" : aliasMap.get(name) || undefined);
+		const bucket = key && sums.has(key) ? key : "Other";
+		const cur = sums.get(bucket);
+		cur.amount += Number(item?.amount ?? 0);
+		cur.count += Number(item?.count ?? 0);
+		sums.set(bucket, cur);
+	}
+
+	const nf = new Intl.NumberFormat("en-US");
+
 	return (
 		<Grid container spacing={4}>
-			<Grid
-				size={{
-					md: 6,
-					xl: 4,
-					xs: 12,
-				}}
-			>
-				<Card>
-					<CardContent>
-						<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-							<Avatar
-								sx={{
-									"--Avatar-size": "48px",
-									bgcolor: "var(--mui-palette-background-paper)",
-									boxShadow: "var(--mui-shadows-8)",
-									color: "var(--mui-palette-text-primary)",
-								}}
-							>
-								<ReceiptIcon fontSize="var(--icon-fontSize-lg)" />
-							</Avatar>
-							<div>
-								<Typography color="text.secondary" variant="body2">
-									Total
-								</Typography>
-								<Typography variant="h6">{fmtCurrency(amountAll)}</Typography>
-								<Typography color="text.secondary" variant="body2">
-									from {new Intl.NumberFormat("en-US").format(countAll)} receipts
-								</Typography>
-							</div>
-						</Stack>
-					</CardContent>
-				</Card>
-			</Grid>
-			<Grid
-				size={{
-					md: 6,
-					xl: 4,
-					xs: 12,
-				}}
-			>
-				<Card>
-					<CardContent>
-						<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-							<Avatar
-								sx={{
-									"--Avatar-size": "48px",
-									bgcolor: "var(--mui-palette-background-paper)",
-									boxShadow: "var(--mui-shadows-8)",
-									color: "var(--mui-palette-text-primary)",
-								}}
-							>
-								<CheckIcon fontSize="var(--icon-fontSize-lg)" />
-							</Avatar>
-							<div>
-								<Typography color="text.secondary" variant="body2">
-									Completed
-								</Typography>
-								<Typography variant="h6">{fmtCurrency(amountCompleted)}</Typography>
-								<Typography color="text.secondary" variant="body2">
-									from {new Intl.NumberFormat("en-US").format(countCompleted)} receipts
-								</Typography>
-							</div>
-						</Stack>
-					</CardContent>
-				</Card>
-			</Grid>
-			<Grid
-				size={{
-					md: 6,
-					xl: 4,
-					xs: 12,
-				}}
-			>
-				<Card>
-					<CardContent>
-						<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-							<Avatar
-								sx={{
-									"--Avatar-size": "48px",
-									bgcolor: "var(--mui-palette-background-paper)",
-									boxShadow: "var(--mui-shadows-8)",
-									color: "var(--mui-palette-text-primary)",
-								}}
-							>
-								<ClockIcon fontSize="var(--icon-fontSize-lg)" />
-							</Avatar>
-							<div>
-								<Typography color="text.secondary" variant="body2">
-									Pending
-								</Typography>
-								<Typography variant="h6">{fmtCurrency(amountPending)}</Typography>
-								<Typography color="text.secondary" variant="body2">
-									from {new Intl.NumberFormat("en-US").format(countPending)} receipts
-								</Typography>
-							</div>
-						</Stack>
-					</CardContent>
-				</Card>
-			</Grid>
+			{CANONICAL.map((c) => {
+				const v = sums.get(c.key) || { amount: 0, count: 0 };
+				return (
+					<Grid key={c.key} size={{ md: 6, xl: 4, xs: 12 }}>
+						<Card>
+							<CardContent>
+								<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+									<Avatar
+										sx={{
+											"--Avatar-size": "48px",
+											bgcolor: "var(--mui-palette-background-paper)",
+											boxShadow: "var(--mui-shadows-8)",
+											color: "var(--mui-palette-text-primary)",
+										}}
+									>
+										<TagIcon fontSize="var(--icon-fontSize-lg)" />
+									</Avatar>
+									<div>
+										<Typography color="text.secondary" variant="body2">
+											{c.label}
+										</Typography>
+										<Typography variant="h6">{fmtCurrency(Number(v.amount))}</Typography>
+										<Typography color="text.secondary" variant="body2">
+											from {nf.format(Number(v.count || 0))} receipts
+										</Typography>
+									</div>
+								</Stack>
+							</CardContent>
+						</Card>
+					</Grid>
+				);
+			})}
 		</Grid>
 	);
 }

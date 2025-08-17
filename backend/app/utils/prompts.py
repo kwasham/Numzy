@@ -29,7 +29,7 @@ def get_default_extraction_prompt() -> str:
         total and any handwritten notes. Use the following JSON schema
         for the output:
 
-        ReceiptDetails: {
+                ReceiptDetails: {
           merchant: string | null,
           location: {
             city: string | null,
@@ -52,6 +52,12 @@ def get_default_extraction_prompt() -> str:
           tax: string | null,
           total: string | null,
           handwritten_notes: [string],
+                    payment_method: {
+                        type: string | null,        // e.g., card, cash, apple_pay
+                        brand: string | null,       // e.g., Visa, Mastercard, Amex
+                        last4: string | null,       // last 4 digits if printed
+                        cardholder: string | null,  // name on card if present
+                    },
         }
 
         Only provide fields you can infer from the receipt. If a field

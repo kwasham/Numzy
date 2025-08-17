@@ -35,10 +35,14 @@ export function ReceiptUploadWidget() {
 	const [uploading, setUploading] = React.useState(false);
 
 	const onDrop = React.useCallback((accepted) => {
-		// Only keep images, enforce size <= 10MB, like the API
-		const filtered = accepted.filter((f) => f.type?.startsWith("image/") && f.size <= 10 * 1024 * 1024);
+		// Accept images or PDFs, enforce size <= 10MB (aligned with API)
+		const filtered = accepted.filter((f) => {
+			const isImage = f.type?.startsWith("image/");
+			const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+			return (isImage || isPdf) && f.size <= 10 * 1024 * 1024;
+		});
 		if (filtered.length !== accepted.length) {
-			toast.warning("Only image files up to 10MB are allowed.");
+			toast.warning("Only images or PDFs up to 10MB are allowed.");
 		}
 		setFiles((prev) => [...prev, ...filtered]);
 	}, []);
@@ -48,7 +52,7 @@ export function ReceiptUploadWidget() {
 
 	const handleUpload = async () => {
 		if (files.length === 0) {
-			toast.info("Pick an image first.");
+			toast.info("Pick a file first.");
 			return;
 		}
 		setUploading(true);
@@ -78,9 +82,13 @@ export function ReceiptUploadWidget() {
 			<Box sx={{ p: 3 }}>
 				<Stack spacing={2}>
 					<Typography variant="body2" color="text.secondary">
-						Select a receipt image (PNG, JPG, WEBP; up to 10MB) and upload it to the API.
+						Select a receipt image or PDF (PNG, JPG, WEBP, PDF; up to 10MB) and upload it to the API.
 					</Typography>
-					<FileDropzone accept={{ "image/*": [] }} caption="Max file size is 10 MB" onDrop={onDrop} />
+					<FileDropzone
+						accept={{ "image/*": [], "application/pdf": [] }}
+						caption="Max file size is 10 MB"
+						onDrop={onDrop}
+					/>
 					{files.length > 0 && (
 						<Stack spacing={1}>
 							{files.map((f, i) => (

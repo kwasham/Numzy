@@ -50,6 +50,15 @@ class LineItem(BaseModel):
     total: Optional[str] = None
 
 
+class PaymentMethod(BaseModel):
+    """Payment method details parsed from the receipt."""
+
+    type: Optional[str] = Field(default=None, description="Type of payment method, e.g., card, cash")
+    brand: Optional[str] = Field(default=None, description="Brand for card payments, e.g., Visa, Mastercard")
+    last4: Optional[str] = Field(default=None, description="Last 4 digits for card payments if visible")
+    cardholder: Optional[str] = Field(default=None, description="Name on card if present")
+
+
 class ReceiptDetails(BaseModel):
     """Complete structured receipt details used as the output of extraction."""
 
@@ -61,6 +70,7 @@ class ReceiptDetails(BaseModel):
     tax: Optional[str] = None
     total: Optional[str] = None
     handwritten_notes: List[str] = Field(default_factory=list)
+    payment_method: PaymentMethod = Field(default_factory=PaymentMethod)
 
 
 class AuditDecision(BaseModel):
