@@ -1,18 +1,16 @@
-import * as React from "react";
 import RouterLink from "next/link";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Container from "@mui/material/Container";
 import Grid from "@mui/material/Grid";
 import Link from "@mui/material/Link";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { ArrowLeftIcon } from "@phosphor-icons/react/dist/ssr/ArrowLeft";
-import { ArrowRightIcon } from "@phosphor-icons/react/dist/ssr/ArrowRight";
 import { LockIcon } from "@phosphor-icons/react/dist/ssr/Lock";
 
 import { appConfig } from "@/config/app";
 import { paths } from "@/paths";
+import { BillingButtons } from "@/components/billing/billing-buttons";
 import { CheckoutForm } from "@/components/marketing/checkout/checkout-form";
 import { OrderSummary } from "@/components/marketing/checkout/order-summary";
 
@@ -73,11 +71,7 @@ export default function Page() {
 						<Typography color="text.secondary" variant="body2">
 							Your purchases are secured by an industry best encryption service - Stripe
 						</Typography>
-						<div>
-							<Button color="primary" endIcon={<ArrowRightIcon />} variant="contained">
-								Complete order
-							</Button>
-						</div>
+						<BillingButtons />
 					</Stack>
 				</Stack>
 			</Container>
