@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Body
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +24,7 @@ except Exception as e:  # pragma: no cover
 
 @router.post("/checkout")
 async def create_checkout_session(
-    price_id: str,
+    price_id: str = Body(..., embed=True),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_user),
 ):
