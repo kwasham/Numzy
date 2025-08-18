@@ -12,28 +12,60 @@ export function PlanBadge({ size = "small" }) {
 	const { getToken } = useAuth();
 	const [state, setState] = React.useState({ loading: true, plan: null, error: null });
 
+	const fetchStatus = React.useCallback(async () => {
+		const token = (await getToken?.()) || null;
+		const res = await fetch(`${API_URL}/billing/status`, {
+			headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+			credentials: "include",
+		});
+		if (!res.ok) throw new Error(`Status ${res.status}`);
+		return res.json();
+	}, [getToken]);
+
 	React.useEffect(() => {
 		let active = true;
-		(async () => {
+		let timer = null;
+
+		const run = async () => {
 			try {
-				const token = (await getToken?.()) || null;
-				const res = await fetch(`${API_URL}/billing/status`, {
-					headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-					credentials: "include",
-				});
-				if (!res.ok) throw new Error(`Status ${res.status}`);
-				const data = await res.json();
+				const data = await fetchStatus();
 				if (!active) return;
-				setState({ loading: false, plan: (data?.plan || "FREE").toString(), error: null });
+				const plan = (data?.plan || "FREE").toString();
+				setState({ loading: false, plan, error: null });
+
+				// If we are within the refresh window, keep polling every 5s until plan != FREE
+				const until = Number(globalThis.sessionStorage?.getItem("numzy_plan_refresh_until") || 0);
+				const now = Date.now();
+				const withinWindow = until && now < until;
+				if (withinWindow && plan === "FREE") {
+					timer = globalThis.setTimeout(run, 5000);
+				} else if (withinWindow && plan !== "FREE") {
+					// Plan upgraded within window; clear flag and stop polling
+					try {
+						globalThis.sessionStorage?.removeItem("numzy_plan_refresh_until");
+					} catch (error) {
+						void error;
+					}
+				} else if (!withinWindow) {
+					// Clear the flag once window elapsed
+					try {
+						globalThis.sessionStorage?.removeItem("numzy_plan_refresh_until");
+					} catch (error) {
+						void error;
+					}
+				}
 			} catch (error) {
 				if (!active) return;
-				setState({ loading: false, plan: null, error });
+				setState((prev) => ({ ...prev, loading: false, error }));
 			}
-		})();
+		};
+
+		run();
 		return () => {
 			active = false;
+			if (timer) globalThis.clearTimeout(timer);
 		};
-	}, [getToken]);
+	}, [fetchStatus]);
 
 	if (state.loading) {
 		return (

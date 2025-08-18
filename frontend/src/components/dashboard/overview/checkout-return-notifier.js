@@ -9,6 +9,13 @@ export function CheckoutReturnNotifier() {
 		const url = new URL(globalThis.location.href);
 		const flag = url.searchParams.get("checkout");
 		if (flag === "success") {
+			// Hint other components (e.g., PlanBadge) to refresh status for up to 60s
+			try {
+				const until = Date.now() + 60_000;
+				globalThis.sessionStorage?.setItem("numzy_plan_refresh_until", String(until));
+			} catch {
+				/* ignore */
+			}
 			toast.success("Checkout complete. Your plan will update shortly.");
 			url.searchParams.delete("checkout");
 			globalThis.history.replaceState({}, "", url.toString());

@@ -3,6 +3,7 @@
 import * as React from "react";
 import RouterLink from "next/link";
 import { usePathname } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
@@ -56,6 +57,20 @@ const icons = {
 
 export function SideNav() {
 	const pathname = usePathname();
+	const { user, isLoaded } = useUser();
+	const displayName = isLoaded ? user?.fullName || user?.username || user?.primaryEmailAddress?.emailAddress || "" : "";
+	const email = isLoaded ? user?.primaryEmailAddress?.emailAddress || "" : "";
+	const avatarUrl = isLoaded ? user?.imageUrl : null;
+	const initials = React.useMemo(() => {
+		const base = displayName || email || "U";
+		const parts = String(base).trim().split(/\s+/);
+		const chars = parts
+			.map((p) => (p && p[0] ? p[0] : ""))
+			.filter(Boolean)
+			.slice(0, 2)
+			.join("");
+		return chars ? chars.toUpperCase() : "U";
+	}, [displayName, email]);
 
 	return (
 		<div>
@@ -88,11 +103,11 @@ export function SideNav() {
 					))}
 				</Stack>
 				<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-					<Avatar src="/assets/avatar.png">AV</Avatar>
+					<Avatar src={avatarUrl || undefined}>{avatarUrl ? null : initials}</Avatar>
 					<div>
-						<Typography variant="subtitle1">Sofia Rivers</Typography>
+						<Typography variant="subtitle1">{displayName || ""}</Typography>
 						<Typography color="text.secondary" variant="caption">
-							sofia@devias.io
+							{email || ""}
 						</Typography>
 					</div>
 				</Stack>

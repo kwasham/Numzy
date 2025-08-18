@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Body, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ except Exception as e:  # pragma: no cover
 @router.post("/checkout")
 async def create_checkout_session(
     price_id: str | None = Body(None, embed=True),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_user),
 ):
@@ -62,6 +63,10 @@ async def create_checkout_session(
     cancel_url = f"{settings.FRONTEND_BASE_URL}/pricing?checkout=cancelled"
 
     try:
+        # Build request options including optional idempotency key
+        request_opts = {}
+        if idempotency_key:
+            request_opts["idempotency_key"] = idempotency_key
         session = stripe.checkout.Session.create(  # type: ignore
             mode="subscription",
             customer=customer_id,
@@ -71,12 +76,89 @@ async def create_checkout_session(
             client_reference_id=getattr(user, "clerk_id", None),
             allow_promotion_codes=True,
             billing_address_collection="auto",
+            **request_opts,
         )
     except Exception as e:  # pragma: no cover
         logger.exception("Failed to create checkout session: %s", e)
         raise HTTPException(status_code=500, detail="Unable to create checkout session")
 
     return JSONResponse({"url": session["url"]})
+
+
+@router.post("/elements/init")
+async def init_elements_subscription(
+    price_id: str = Body(..., embed=True),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_user),
+):
+    """Initialize a subscription for a custom checkout using Stripe Elements.
+
+    Creates a subscription in default_incomplete state and returns the latest invoice
+    payment_intent client_secret so the client can confirm with Stripe Elements.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    if not price_id:
+        raise HTTPException(status_code=400, detail="price_id is required")
+
+    # Ensure Stripe customer exists for user
+    customer_id = getattr(user, "stripe_customer_id", None)
+    if not customer_id:
+        try:
+            # Try lookup by email first
+            found = stripe.Customer.list(email=user.email, limit=1)  # type: ignore
+            data = found.get("data", []) if isinstance(found, dict) else []
+            if data:
+                customer_id = data[0]["id"]
+            else:
+                cust = stripe.Customer.create(email=user.email)  # type: ignore
+                customer_id = cust["id"]
+            user.stripe_customer_id = customer_id
+            await db.commit()
+        except Exception as e:  # pragma: no cover
+            logger.exception("Failed to ensure Stripe customer for Elements init: %s", e)
+            raise HTTPException(status_code=500, detail="Unable to initialize customer")
+
+    try:
+        request_opts = {}
+        if idempotency_key:
+            request_opts["idempotency_key"] = idempotency_key
+        sub = stripe.Subscription.create(  # type: ignore
+            customer=customer_id,
+            items=[{"price": price_id}],
+            payment_behavior="default_incomplete",
+            expand=["latest_invoice.payment_intent"],
+            metadata={"user_id": str(getattr(user, "id", "")), "clerk_id": getattr(user, "clerk_id", None) or ""},
+            payment_settings={"save_default_payment_method": "on_subscription"},
+            **request_opts,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.exception("Failed to create default_incomplete subscription: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to create subscription")
+
+    try:
+        latest_invoice = sub.get("latest_invoice", {}) if isinstance(sub, dict) else {}
+        pi = latest_invoice.get("payment_intent", {}) if isinstance(latest_invoice, dict) else {}
+        client_secret = pi.get("client_secret")
+        if not client_secret:
+            raise ValueError("Missing client_secret on payment_intent")
+    except Exception as e:  # pragma: no cover
+        logger.exception("Subscription created but no client_secret available: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to initialize payment")
+
+    return JSONResponse(
+        {
+            "subscription_id": sub.get("id"),
+            "client_secret": client_secret,
+            "customer_id": customer_id,
+        }
+    )
 
 
 @router.post("/portal")
@@ -158,6 +240,7 @@ async def get_billing_status(
             logger.warning("Stripe customer lookup failed for %s: %s", user.email, e)
 
     subscription_summary = None
+    sub_price_id = None
     if customer_id:
         try:
             subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)  # type: ignore
@@ -171,6 +254,7 @@ async def get_billing_status(
                         price_id = items[0].get("price", {}).get("id")
                 except Exception:
                     price_id = None
+                sub_price_id = price_id
                 period_end = None
                 try:
                     cpe = sub.get("current_period_end")
@@ -193,10 +277,55 @@ async def get_billing_status(
     if isinstance(plan_value, PlanType):
         plan_value = plan_value.value
 
+    # Build a lightweight catalog of plans with current Stripe prices
+    catalog = {
+        "startup": {"name": "Startup", "currency": "USD", "price": 0, "price_id": None},
+    }
+    try:
+        if settings.STRIPE_PRICE_PRO_MONTHLY:
+            p = stripe.Price.retrieve(settings.STRIPE_PRICE_PRO_MONTHLY)  # type: ignore
+            unit = p.get("unit_amount") or 0
+            currency = (p.get("currency") or "usd").upper()
+            catalog["standard"] = {
+                "name": "Standard",
+                "currency": currency,
+                "price": float(unit) / 100.0,
+                "price_id": settings.STRIPE_PRICE_PRO_MONTHLY,
+            }
+        if settings.STRIPE_PRICE_TEAM_MONTHLY:
+            p = stripe.Price.retrieve(settings.STRIPE_PRICE_TEAM_MONTHLY)  # type: ignore
+            unit = p.get("unit_amount") or 0
+            currency = (p.get("currency") or "usd").upper()
+            catalog["business"] = {
+                "name": "Business",
+                "currency": currency,
+                "price": float(unit) / 100.0,
+                "price_id": settings.STRIPE_PRICE_TEAM_MONTHLY,
+            }
+    except Exception as e:  # pragma: no cover
+        logger.warning("Failed to build plan catalog from Stripe: %s", e)
+
+    # Reconcile plan based on active subscription price if it doesn't match DB
+    try:
+        target_plan: PlanType | None = None
+        if sub_price_id:
+            if sub_price_id == settings.STRIPE_PRICE_PRO_MONTHLY or sub_price_id == settings.STRIPE_PRICE_PRO_YEARLY:
+                target_plan = PlanType.PRO
+            elif sub_price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
+                target_plan = PlanType.BUSINESS
+        if target_plan is not None and getattr(user, "plan", None) != target_plan:
+            user.plan = target_plan
+            await db.commit()
+            # Normalize for response
+            plan_value = target_plan.value
+    except Exception as _recon_ex:  # pragma: no cover
+        logger.warning("Failed to reconcile user plan from subscription: %s", _recon_ex)
+
     return JSONResponse(
         {
             "plan": plan_value,
             "stripe_customer_id": customer_id,
             "subscription": subscription_summary,
+            "catalog": catalog,
         }
     )

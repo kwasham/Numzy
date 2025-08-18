@@ -1,6 +1,6 @@
 "use client";
 
-import * as React from "react";
+import { useUser } from "@clerk/nextjs";
 import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -23,12 +23,16 @@ import { UserIcon } from "@phosphor-icons/react/dist/ssr/User";
 import { Option } from "@/components/core/option";
 
 export function AccountDetails() {
+	const { user, isLoaded } = useUser();
+	const avatarUrl = isLoaded ? user?.imageUrl : null;
+	const displayName = isLoaded ? user?.fullName || user?.username || user?.primaryEmailAddress?.emailAddress || "" : "";
+	const email = isLoaded ? user?.primaryEmailAddress?.emailAddress || "" : "";
 	return (
 		<Card>
 			<CardHeader
 				avatar={
-					<Avatar>
-						<UserIcon fontSize="var(--Icon-fontSize)" />
+					<Avatar src={avatarUrl || undefined} alt={displayName || "User"}>
+						{avatarUrl ? null : <UserIcon fontSize="var(--Icon-fontSize)" />}
 					</Avatar>
 				}
 				title="Basic details"
@@ -71,7 +75,7 @@ export function AccountDetails() {
 										</Typography>
 									</Stack>
 								</Box>
-								<Avatar src="/assets/avatar.png" sx={{ "--Avatar-size": "100px" }} />
+								<Avatar src={avatarUrl || "/assets/avatar.png"} sx={{ "--Avatar-size": "100px" }} />
 							</Box>
 						</Box>
 						<Button color="secondary" size="small">
@@ -81,11 +85,11 @@ export function AccountDetails() {
 					<Stack spacing={2}>
 						<FormControl>
 							<InputLabel>Full name</InputLabel>
-							<OutlinedInput defaultValue="Sofia Rivers" name="fullName" />
+							<OutlinedInput defaultValue={displayName} name="fullName" />
 						</FormControl>
 						<FormControl disabled>
 							<InputLabel>Email address</InputLabel>
-							<OutlinedInput name="email" type="email" value="sofia@devias.io" />
+							<OutlinedInput name="email" type="email" value={email} />
 							<FormHelperText>
 								Please <Link variant="inherit">contact us</Link> to change your email
 							</FormHelperText>

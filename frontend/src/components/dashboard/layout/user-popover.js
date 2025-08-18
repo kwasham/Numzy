@@ -1,7 +1,7 @@
 "use client";
 
-import * as React from "react";
 import RouterLink from "next/link";
+import { useUser } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
 import Divider from "@mui/material/Divider";
 import List from "@mui/material/List";
@@ -17,12 +17,7 @@ import { appConfig } from "@/config/app";
 import { paths } from "@/paths";
 import { AuthStrategy } from "@/lib/auth-strategy";
 
-const user = {
-	id: "USR-000",
-	name: "Sofia Rivers",
-	avatar: "/assets/avatar.png",
-	email: "sofia@devias.io",
-};
+// User details are provided by Clerk; fallback values are handled in the UI.
 
 function SignOutButton() {
 	let signOutUrl = paths.home;
@@ -55,6 +50,9 @@ function SignOutButton() {
 }
 
 export function UserPopover({ anchorEl, onClose, open }) {
+	const { user, isLoaded } = useUser();
+	const displayName = isLoaded ? user?.fullName || user?.username || user?.primaryEmailAddress?.emailAddress : "";
+	const email = isLoaded ? user?.primaryEmailAddress?.emailAddress || "" : "";
 	return (
 		<Popover
 			anchorEl={anchorEl}
@@ -65,9 +63,9 @@ export function UserPopover({ anchorEl, onClose, open }) {
 			transformOrigin={{ horizontal: "right", vertical: "top" }}
 		>
 			<Box sx={{ p: 2 }}>
-				<Typography>{user.name}</Typography>
+				<Typography>{displayName}</Typography>
 				<Typography color="text.secondary" variant="body2">
-					{user.email}
+					{email}
 				</Typography>
 			</Box>
 			<Divider />

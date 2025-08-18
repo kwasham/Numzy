@@ -22,9 +22,10 @@ export function BillingButtons({ priceId = DEFAULT_PRICE, size = "medium" }) {
 			} catch {
 				/* no auth header */
 			}
+			const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 			const res = await fetch(`${API_URL}${path}`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", ...authHeader },
+				headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
 				body: JSON.stringify(body ?? {}),
 				credentials: "include",
 			});

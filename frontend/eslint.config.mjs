@@ -70,6 +70,8 @@ export default [
 		},
 		rules: {
 			"react/prop-types": "off",
+			// Next.js with React 17+ doesn't require React in scope for JSX
+			"react/react-in-jsx-scope": "off",
 		},
 	},
 	...compat.extends("plugin:react-hooks/recommended"),

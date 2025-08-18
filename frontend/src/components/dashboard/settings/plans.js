@@ -1,4 +1,8 @@
+"use client";
+
 import * as React from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -18,14 +22,77 @@ import { PropertyList } from "@/components/core/property-list";
 
 import { PlanCard } from "./plan-card";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 const plans = [
-	{ id: "startup", name: "Startup", currency: "USD", price: 0 },
-	{ id: "standard", name: "Standard", currency: "USD", price: 14.99 },
-	{ id: "business", name: "Business", currency: "USD", price: 29.99 },
+	{ id: "startup", name: "Free", currency: "USD", price: 0 },
+	{ id: "standard", name: "Pro", currency: "USD", price: 14.99 },
+	{ id: "business", name: "Team", currency: "USD", price: 29.99 },
 ];
 
+function mapPlanToCardId(planName) {
+	// Normalize and map backend plan values to our UI card ids
+	const p = String(planName || "").toUpperCase();
+	if (p === "FREE") return "startup";
+	if (p === "PRO") return "standard";
+	if (p === "BUSINESS" || p === "ENTERPRISE") return "business";
+	// Default to startup when unknown
+	return "startup";
+}
+
 export function Plans() {
-	const currentPlanId = "standard";
+	const { getToken } = useAuth();
+	const router = useRouter();
+	const [state, setState] = React.useState({
+		loading: true,
+		currentPlanId: "startup",
+		catalog: null,
+		selected: null,
+		upgrading: false,
+	});
+
+	const fetchStatus = React.useCallback(async () => {
+		const token = (await getToken?.()) || null;
+		const res = await fetch(`${API_URL}/billing/status`, {
+			headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+			credentials: "include",
+		});
+		if (!res.ok) throw new Error(`Status ${res.status}`);
+		return res.json();
+	}, [getToken]);
+
+	React.useEffect(() => {
+		let active = true;
+		(async () => {
+			try {
+				const data = await fetchStatus();
+				if (!active) return;
+				const currentPlanId = mapPlanToCardId(data?.plan);
+				setState((prev) => ({ ...prev, loading: false, currentPlanId, catalog: data?.catalog ?? null }));
+			} catch {
+				if (!active) return;
+				// Fallback to startup on error
+				setState((prev) => ({ ...prev, loading: false, currentPlanId: "startup" }));
+			}
+		})();
+		return () => {
+			active = false;
+		};
+	}, [fetchStatus]);
+
+	const handleSelect = (planId) => {
+		setState((prev) => ({ ...prev, selected: planId }));
+	};
+
+	const handleUpgrade = async () => {
+		const target = state.selected || state.currentPlanId;
+		// No-op if selecting current plan or FREE
+		if (target === state.currentPlanId || target === "startup") return;
+		setState((prev) => ({ ...prev, upgrading: true }));
+		// Navigate to custom Elements checkout page, pass plan in query
+		router.push(`/subscribe?plan=${encodeURIComponent(target)}`);
+		setState((prev) => ({ ...prev, upgrading: false }));
+	};
 
 	return (
 		<Card>
@@ -42,20 +109,34 @@ export function Plans() {
 				<Stack divider={<Divider />} spacing={3}>
 					<Stack spacing={3}>
 						<Grid container spacing={3}>
-							{plans.map((plan) => (
-								<Grid
-									key={plan.id}
-									size={{
-										md: 4,
-										xs: 12,
-									}}
-								>
-									<PlanCard isCurrent={plan.id === currentPlanId} plan={plan} />
-								</Grid>
-							))}
+							{plans.map((plan) => {
+								const override = state.catalog?.[plan.id];
+								const displayPlan = override
+									? {
+											...plan,
+											price: typeof override.price === "number" ? override.price : plan.price,
+											currency: override.currency || plan.currency,
+										}
+									: plan;
+								return (
+									<Grid
+										key={plan.id}
+										size={{
+											md: 4,
+											xs: 12,
+										}}
+									>
+										<Box onClick={() => handleSelect(plan.id)}>
+											<PlanCard isCurrent={plan.id === state.currentPlanId} plan={displayPlan} />
+										</Box>
+									</Grid>
+								);
+							})}
 						</Grid>
 						<Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-							<Button variant="contained">Upgrade plan</Button>
+							<Button onClick={handleUpgrade} disabled={state.upgrading} variant="contained">
+								{state.upgrading ? "Redirecting…" : "Upgrade plan"}
+							</Button>
 						</Box>
 					</Stack>
 					<Stack spacing={3}>

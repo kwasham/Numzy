@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useUser } from "@clerk/nextjs";
 import Avatar from "@mui/material/Avatar";
 import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
@@ -167,15 +168,10 @@ function LanguageSwitch() {
 	);
 }
 
-const user = {
-	id: "USR-000",
-	name: "Sofia Rivers",
-	avatar: "/assets/avatar.png",
-	email: "sofia@devias.io",
-};
-
 function UserButton() {
 	const popover = usePopover();
+	const { user, isLoaded } = useUser();
+	const avatarUrl = isLoaded ? user?.imageUrl : null;
 
 	return (
 		<React.Fragment>
@@ -200,7 +196,7 @@ function UserButton() {
 					}}
 					variant="dot"
 				>
-					<Avatar src={user.avatar} />
+					<Avatar src={avatarUrl || "/assets/avatar.png"} alt={user?.fullName || "User"} />
 				</Badge>
 			</Box>
 			<UserPopover anchorEl={popover.anchorRef.current} onClose={popover.handleClose} open={popover.open} />

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 from app.models.tables import User
 from app.models.enums import PlanType
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,19 @@ except Exception as e:  # pragma: no cover
     logger.exception("Failed to import Stripe SDK: %s", e)
     stripe = None  # type: ignore
 
+
+@lru_cache(maxsize=1)
+def _get_redis_client():
+    """Return a cached Redis client for lightweight operations.
+
+    We only use basic SET NX EX for webhook de-duplication; failures are non-fatal.
+    """
+    try:  # lazy import to avoid hard dep when Redis is unavailable
+        import redis  # type: ignore
+        return redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    except Exception as e:  # pragma: no cover - defensive; webhook will continue without dedup
+        logger.warning("[stripe] redis unavailable for dedup: %s", e)
+        return None
 
 @router.post("/stripe")
 async def stripe_webhook(request: Request):
@@ -55,6 +69,20 @@ async def stripe_webhook(request: Request):
     except Exception as e:  # pragma: no cover
         logger.exception("Error parsing Stripe webhook: %s", e)
         raise HTTPException(status_code=400, detail="Invalid payload")
+
+    # Redis-based de-duplication to avoid double-processing the same event
+    event_id = event.get("id") if isinstance(event, dict) else None
+    if event_id:
+        try:
+            r = _get_redis_client()
+            if r is not None:
+                # store for 7 days; if already present, treat as duplicate and ack
+                set_result = r.set(name=f"stripe:webhook:{event_id}", value="1", nx=True, ex=7 * 24 * 3600)
+                if not set_result:
+                    logger.info("[stripe] duplicate webhook event ignored id=%s", event_id)
+                    return JSONResponse(status_code=200, content={"received": True, "duplicate": True, "id": event_id})
+        except Exception as dedup_ex:  # pragma: no cover - do not fail webhook on redis errors
+            logger.warning("[stripe] redis dedup check failed: %s", dedup_ex)
 
     # Handle a richer set of common events (no-op DB writes yet; structured logs only)
     event_type: str = event.get("type", "")
@@ -141,6 +169,23 @@ async def stripe_webhook(request: Request):
                                 "[stripe] downgraded user id=%s email=%s to FREE due to subscription %s",
                                 getattr(user, "id", None), getattr(user, "email", None), sub_id,
                             )
+                # For created/updated active subscriptions, map plan based on price_id
+                elif customer and status in ("active", "trialing") and price_id:
+                    async with AsyncSessionLocal() as session:
+                        user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
+                        if user:
+                            new_plan: PlanType | None = None
+                            if price_id == settings.STRIPE_PRICE_PRO_MONTHLY or price_id == settings.STRIPE_PRICE_PRO_YEARLY:
+                                new_plan = PlanType.PRO
+                            elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
+                                new_plan = PlanType.BUSINESS
+                            if new_plan is not None and getattr(user, "plan", None) != new_plan:
+                                user.plan = new_plan
+                                await session.commit()
+                                logger.info(
+                                    "[stripe] set user plan from subscription event user_id=%s email=%s plan=%s sub_id=%s",
+                                    getattr(user, "id", None), getattr(user, "email", None), new_plan, sub_id,
+                                )
             except Exception as db_ex:  # pragma: no cover
                 logger.exception("[stripe] failed to downgrade on subscription deletion: %s", db_ex)
 
