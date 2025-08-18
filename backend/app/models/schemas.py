@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from .enums import PlanType, RuleType, ReceiptStatus, EvaluationStatus
 
@@ -126,10 +126,10 @@ class UserCreate(BaseModel):
     name: str
     plan: PlanType = PlanType.FREE
 
-    @validator('name', 'email', 'clerk_id')
+    @field_validator("name", "email", "clerk_id", mode="before")
     def sanitize_fields(cls, v):
         from app.utils.sanitization import sanitize_string
-        return sanitize_string(v)
+        return sanitize_string(v) if v is not None else v
 
 # Schema for updating an existing user
 class UserUpdate(BaseModel):
@@ -137,10 +137,10 @@ class UserUpdate(BaseModel):
     plan: Optional[PlanType] = None
     stripe_customer_id: Optional[str] = None
 
-    @validator('name')
+    @field_validator("name", mode="before")
     def sanitize_name(cls, v):
         from app.utils.sanitization import sanitize_string
-        return sanitize_string(v)
+        return sanitize_string(v) if v is not None else v
 
 
 class ReceiptRead(BaseModel):
@@ -157,8 +157,7 @@ class ReceiptRead(BaseModel):
     extraction_progress: int = 0
     audit_progress: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ReceiptListResponse(BaseModel):
@@ -195,8 +194,7 @@ class AuditRuleRead(AuditRuleBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PromptTemplateBase(BaseModel):
@@ -206,20 +204,20 @@ class PromptTemplateBase(BaseModel):
 
 
 class PromptTemplateCreate(PromptTemplateBase):
-    @validator('name', 'type', 'content')
+    @field_validator("name", "type", "content", mode="before")
     def sanitize_fields(cls, v):
         from app.utils.sanitization import sanitize_string
-        return sanitize_string(v)
+        return sanitize_string(v) if v is not None else v
 
 
 class PromptTemplateUpdate(BaseModel):
     name: Optional[str] = None
     content: Optional[str] = None
 
-    @validator('name', 'content')
+    @field_validator("name", "content", mode="before")
     def sanitize_fields(cls, v):
         from app.utils.sanitization import sanitize_string
-        return sanitize_string(v)
+        return sanitize_string(v) if v is not None else v
 
 
 class PromptTemplateRead(PromptTemplateBase):
@@ -227,8 +225,7 @@ class PromptTemplateRead(PromptTemplateBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EvaluationCreate(BaseModel):
@@ -244,8 +241,7 @@ class EvaluationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CostAnalysisCreate(BaseModel):
@@ -264,8 +260,7 @@ class CostAnalysisRead(BaseModel):
     result: Dict[str, Any]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Api for updating receipts
 class ReceiptUpdate(BaseModel):
@@ -303,8 +298,7 @@ class ReceiptResponse(BaseModel):
     extraction_progress: int = 0
     audit_progress: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Add these new schemas

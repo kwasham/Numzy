@@ -234,6 +234,13 @@ export default function SubscribePage() {
 											label={`Numzy — ${catalog[selected]?.name || "Subscription"} (monthly)`}
 											isDark={isDark}
 										/>
+										<Typography
+											variant="caption"
+											color="text.secondary"
+											sx={{ display: "block", textAlign: "center", my: 1 }}
+										>
+											or pay with card
+										</Typography>
 										<CheckoutForm />
 									</Elements>
 								) : (

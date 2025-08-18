@@ -39,8 +39,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
-from app.models.tables import Receipt, BackgroundJob, Evaluation
-from app.models.enums import ReceiptStatus, EvaluationStatus
+from app.models.tables import Receipt, BackgroundJob, Evaluation, User
+from app.models.enums import ReceiptStatus, EvaluationStatus, PlanType
 from app.services.extraction_service import ExtractionService
 
 # Optional Sentry for spans (worker initialises globally)
@@ -398,8 +398,120 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
             pass
         raise
 
+
+@dramatiq.actor(max_retries=5)
+def process_stripe_event(event: dict):
+    """Process a Stripe webhook event asynchronously.
+
+    Mirrors the logic in the API webhook but uses a sync DB session.
+    Keep this handler idempotent; webhook delivery may be retried by Stripe.
+    """
+    session = SessionLocal()
+    try:
+        event_type = event.get("type", "")
+        data_object = event.get("data", {}).get("object", {}) if isinstance(event, dict) else {}
+        if event_type == "checkout.session.completed":
+            customer = data_object.get("customer")
+            client_ref = data_object.get("client_reference_id")
+            customer_email = data_object.get("customer_email")
+            user_obj = None
+            if client_ref:
+                user_obj = session.query(User).filter(User.clerk_id == str(client_ref)).first()
+            if not user_obj and customer_email:
+                user_obj = session.query(User).filter(User.email == customer_email).first()
+            if user_obj and customer and not getattr(user_obj, "stripe_customer_id", None):
+                user_obj.stripe_customer_id = customer
+                session.commit()
+
+        elif event_type in (
+            "customer.subscription.created",
+            "customer.subscription.updated",
+            "customer.subscription.deleted",
+        ):
+            status = data_object.get("status")
+            customer = data_object.get("customer")
+            price_id = None
+            try:
+                items = data_object.get("items", {}).get("data", [])
+                if items:
+                    price_id = items[0].get("price", {}).get("id")
+            except Exception:
+                price_id = None
+            if not customer:
+                return
+            user = session.query(User).filter(User.stripe_customer_id == customer).first()
+            if not user:
+                return
+            if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
+                if getattr(user, "plan", None) != PlanType.FREE:
+                    user.plan = PlanType.FREE
+                    session.commit()
+            elif status in ("active", "trialing") and price_id:
+                new_plan = None
+                if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                    new_plan = PlanType.PRO
+                elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
+                    new_plan = PlanType.BUSINESS
+                if new_plan is not None and getattr(user, "plan", None) != new_plan:
+                    user.plan = new_plan
+                    session.commit()
+
+        elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
+            customer = data_object.get("customer")
+            customer_email = data_object.get("customer_email")
+            price_id = None
+            try:
+                lines = data_object.get("lines", {}).get("data", [])
+                if lines:
+                    price_id = lines[0].get("price", {}).get("id")
+            except Exception:
+                price_id = None
+            user = None
+            if customer:
+                user = session.query(User).filter(User.stripe_customer_id == customer).first()
+            if not user and customer_email:
+                user = session.query(User).filter(User.email == customer_email).first()
+            if not user:
+                return
+            changed = False
+            if customer and not getattr(user, "stripe_customer_id", None):
+                user.stripe_customer_id = customer
+                changed = True
+            if price_id:
+                plan = None
+                if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                    plan = PlanType.PRO
+                elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
+                    plan = PlanType.BUSINESS
+                if plan is not None and getattr(user, "plan", None) != plan:
+                    user.plan = plan
+                    changed = True
+            if changed:
+                session.commit()
+
+        elif event_type in ("customer.created", "customer.updated"):
+            cust_id = data_object.get("id")
+            email = data_object.get("email")
+            if cust_id and email:
+                user = session.query(User).filter(User.email == email).first()
+                if user and not getattr(user, "stripe_customer_id", None):
+                    user.stripe_customer_id = cust_id
+                    session.commit()
+        # payment_failed and action_required are logged by API already; nothing to persist synchronously here
+    except Exception as e:  # pragma: no cover
+        print(f"[stripe][task] failed to process event {event.get('type')}: {e}")
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        raise
     finally:
-        session.close()
+        try:
+            session.close()
+        except Exception:
+            pass
+
+    
 
 
 @dramatiq.actor

@@ -115,14 +115,37 @@ class Settings(BaseSettings):
     
     # Stripe
     STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRET")
+    # Comma-separated list of webhook secrets to support rotation seamlessly
+    STRIPE_WEBHOOK_SECRETS: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRETS")
     # Optional: known price IDs to map to plans
     STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_MONTHLY")
     STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_YEARLY")
     STRIPE_PRICE_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_TEAM_MONTHLY")
+    # Optional: prefer price.lookup_key instead of hard-coded IDs
+    STRIPE_LOOKUP_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_MONTHLY")
+    STRIPE_LOOKUP_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_YEARLY")
+    STRIPE_LOOKUP_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_TEAM_MONTHLY")
+    # Optional: Stripe Billing Portal configuration ID
+    STRIPE_PORTAL_CONFIGURATION_ID: Optional[str] = Field(default=None, env="STRIPE_PORTAL_CONFIGURATION_ID")
     
     # Legacy Config class no longer required; using model_config above
 
 settings = Settings()
+
+# Convenience: computed helpers
+def get_webhook_secret_list() -> list[str]:
+    """Return list of webhook secrets for signature verification.
+
+    Order matters; the first secret is treated as primary.
+    """
+    secrets: list[str] = []
+    if settings.STRIPE_WEBHOOK_SECRETS:
+        secrets.extend([s.strip() for s in settings.STRIPE_WEBHOOK_SECRETS.split(",") if s.strip()])
+    if settings.STRIPE_WEBHOOK_SECRET and settings.STRIPE_WEBHOOK_SECRET.strip():
+        # Append single secret if not already present
+        if settings.STRIPE_WEBHOOK_SECRET.strip() not in secrets:
+            secrets.append(settings.STRIPE_WEBHOOK_SECRET.strip())
+    return secrets
 
 # Reduce SQLAlchemy logging verbosity
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)

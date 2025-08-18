@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
-from app.core.config import settings
+from app.core.config import settings, get_webhook_secret_list
 import logging
 import datetime as dt
 from typing import Any, Dict
@@ -12,6 +12,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.tables import User
 from app.models.enums import PlanType
 from functools import lru_cache
+from app.core.tasks import process_stripe_event
 
 logger = logging.getLogger(__name__)
 
@@ -51,24 +52,31 @@ async def stripe_webhook(request: Request):
 
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
-    endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
+    endpoint_secrets = get_webhook_secret_list()
 
-    if not endpoint_secret:
+    if not endpoint_secrets:
         logger.error("STRIPE_WEBHOOK_SECRET not configured")
         raise HTTPException(status_code=500, detail="Webhook not configured")
 
-    try:
-        event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=sig_header,
-            secret=endpoint_secret,
-        )
-    except stripe.error.SignatureVerificationError as e:  # type: ignore
-        logger.warning("Invalid Stripe signature: %s", e)
+    last_sig_error: Exception | None = None
+    event = None
+    for secret in endpoint_secrets:
+        try:
+            event = stripe.Webhook.construct_event(
+                payload=payload,
+                sig_header=sig_header,
+                secret=secret,
+            )
+            break
+        except stripe.error.SignatureVerificationError as e:  # type: ignore
+            last_sig_error = e
+            continue
+        except Exception as e:  # pragma: no cover
+            last_sig_error = e
+            continue
+    if event is None:
+        logger.warning("Invalid Stripe signature after trying %d secrets: %s", len(endpoint_secrets), last_sig_error)
         raise HTTPException(status_code=400, detail="Invalid signature")
-    except Exception as e:  # pragma: no cover
-        logger.exception("Error parsing Stripe webhook: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid payload")
 
     # Redis-based de-duplication to avoid double-processing the same event
     event_id = event.get("id") if isinstance(event, dict) else None
@@ -87,6 +95,14 @@ async def stripe_webhook(request: Request):
     # Handle a richer set of common events (no-op DB writes yet; structured logs only)
     event_type: str = event.get("type", "")
     data_object: Dict[str, Any] = event.get("data", {}).get("object", {})
+    try:  # lightweight observability
+        import sentry_sdk  # type: ignore
+        sentry_sdk.set_tag("stripe.event_type", event_type)
+        if isinstance(data_object, dict):
+            if data_object.get("id"):
+                sentry_sdk.set_context("stripe.object", {"id": data_object.get("id"), "object": data_object.get("object")})
+    except Exception:
+        pass
 
     def _to_iso(ts: Any) -> str | None:
         try:
@@ -96,6 +112,14 @@ async def stripe_webhook(request: Request):
             return dt.datetime.utcfromtimestamp(int(ts)).isoformat() + "Z"
         except Exception:
             return None
+
+    # Offload processing to Dramatiq and return immediately
+    try:
+        process_stripe_event.send(event)  # type: ignore[arg-type]
+        logger.debug("[stripe] queued event for async processing type=%s id=%s", event_type, data_object.get("id"))
+        return JSONResponse(status_code=200, content={"received": True, "queued": True, "type": event_type})
+    except Exception as e:
+        logger.warning("[stripe] failed to enqueue event for async processing: %s", e)
 
     try:
         if event_type == "checkout.session.completed":
@@ -263,6 +287,27 @@ async def stripe_webhook(request: Request):
                 "[stripe] invoice failed id=%s customer=%s subscription=%s attempts=%s",
                 invoice_id, customer, subscription, attempt_count,
             )
+            # Mark user as past_due (soft flag) to drive UI prompts
+            try:
+                if customer:
+                    async with AsyncSessionLocal() as session:
+                        user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
+                        if user:
+                            # Using PlanType unchanged; store a soft flag via updated_at or future field (no schema change now)
+                            # For now, only log; UI should read subscription status via /billing/status
+                            logger.info("[stripe] flagged user id=%s email=%s as past_due due to invoice %s", getattr(user, "id", None), getattr(user, "email", None), invoice_id)
+            except Exception as db_ex:  # pragma: no cover
+                logger.exception("[stripe] failed to flag past_due: %s", db_ex)
+
+        elif event_type in ("invoice.payment_action_required",):
+            invoice_id = data_object.get("id")
+            customer = data_object.get("customer")
+            subscription = data_object.get("subscription")
+            logger.warning(
+                "[stripe] invoice requires action id=%s customer=%s subscription=%s",
+                invoice_id, customer, subscription,
+            )
+            # No DB change; client should be prompted to complete SCA. Status API can surface subscription.status
 
         elif event_type in ("customer.created", "customer.updated"):
             # Best-effort backfill on customer events using email
