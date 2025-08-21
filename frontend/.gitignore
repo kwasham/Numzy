@@ -12,8 +12,8 @@
 /.next/
 /out/
 
-# Prevent accidental recreation of legacy root-level App Router folder; we use src/app instead
-/app/
+# NOTE: Previously ignored /app/ to force use of src/app; retained temporarily because build referenced ./app/layout.tsx.
+# We now allow tracking /app/ so placeholder globals.css can prevent module-not-found errors during cleanup.
 
 # production
 /build
