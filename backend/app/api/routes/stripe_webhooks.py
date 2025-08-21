@@ -96,6 +96,23 @@ async def stripe_webhook(request: Request):
     # Handle a richer set of common events (no-op DB writes yet; structured logs only)
     event_type: str = event.get("type", "")
     data_object: Dict[str, Any] = event.get("data", {}).get("object", {})
+
+    # Optional backend-side allowlist to reduce noise even if Dashboard is broad
+    try:
+        allowed = (settings.STRIPE_WEBHOOK_ALLOWED_EVENTS or "").strip()
+        if allowed:
+            import fnmatch
+            patterns = [p.strip() for p in allowed.split(",") if p.strip()]
+            if patterns and not any(fnmatch.fnmatch(event_type, pat) for pat in patterns):
+                logger.debug("[stripe] event filtered by allowlist type=%s patterns=%s", event_type, patterns)
+                try:
+                    sentry_metric_inc("stripe.webhook.ignored", tags={"event_type": event_type})
+                except Exception:
+                    pass
+                return JSONResponse(status_code=200, content={"received": True, "filtered": True, "type": event_type})
+    except Exception:
+        # best-effort; do not fail on bad pattern
+        pass
     # Lightweight observability (no PII)
     sentry_set_tags({
         "stripe.event_type": event_type,

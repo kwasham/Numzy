@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRET")
     # Comma-separated list of webhook secrets to support rotation seamlessly
     STRIPE_WEBHOOK_SECRETS: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRETS")
+    # Optional: allowlist of webhook event types to process (supports patterns like invoice.*)
+    STRIPE_WEBHOOK_ALLOWED_EVENTS: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_ALLOWED_EVENTS")
     # Optional: known price IDs to map to plans
     STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_MONTHLY")
     STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_YEARLY")
