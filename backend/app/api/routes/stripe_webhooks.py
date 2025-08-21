@@ -77,6 +77,10 @@ async def stripe_webhook(request: Request):
             continue
     if event is None:
         logger.warning("Invalid Stripe signature after trying %d secrets: %s", len(endpoint_secrets), last_sig_error)
+        try:
+            sentry_metric_inc("stripe.webhook.invalid_signature")
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Redis-based de-duplication to avoid double-processing the same event
@@ -89,6 +93,10 @@ async def stripe_webhook(request: Request):
                 set_result = r.set(name=f"stripe:webhook:{event_id}", value="1", nx=True, ex=7 * 24 * 3600)
                 if not set_result:
                     logger.info("[stripe] duplicate webhook event ignored id=%s", event_id)
+                    try:
+                        sentry_metric_inc("stripe.webhook.duplicate")
+                    except Exception:
+                        pass
                     return JSONResponse(status_code=200, content={"received": True, "duplicate": True, "id": event_id})
         except Exception as dedup_ex:  # pragma: no cover - do not fail webhook on redis errors
             logger.warning("[stripe] redis dedup check failed: %s", dedup_ex)

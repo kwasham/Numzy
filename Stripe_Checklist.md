@@ -46,6 +46,7 @@ Next quick wins
   - Implemented via STRIPE_WEBHOOK_SECRETS with verification loop.
 - [ ] Subscribe only to necessary events in Dashboard (reduce noise):
   - `checkout.session.*`, `customer.subscription.*`, `invoice.*`, `customer.*`
+  - Backend safety net added: `STRIPE_WEBHOOK_ALLOWED_EVENTS` allowlist filters non-matching events server‑side and emits `stripe.webhook.ignored` metric.
 
 Files to touch
 
@@ -185,6 +186,7 @@ Refs
 
 - [ ] Sentry: add breadcrumbs/tags (user id, plan, price id, invoice id) — no PII.
 - [ ] Metrics: count webhook receipts, duplicates skipped, failures, subscription state transitions.
+  - Added metrics: `stripe.webhook.queued`, `stripe.webhook.duplicate`, `stripe.webhook.invalid_signature`, `stripe.webhook.ignored`, `stripe.checkout.completed`, `stripe.subscription.event`, `stripe.invoice.paid`, `stripe.invoice.failed`, `stripe.invoice.action_required`.
 - [ ] Tests (minimum):
   - [x] Webhook de-dup logic (unit tests passing).
   - [x] subscription.created/updated/deleted → plan mapping (via reconciliation + tests).
