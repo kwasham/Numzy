@@ -2,7 +2,7 @@
 
 Purpose: a practical, production-hardening guide for our Stripe Billing integration across FastAPI backend and Next.js frontend. Use this document to track readiness and verify go-live steps.
 
-Last updated: 2025-08-18
+Last updated: 2025-08-21
 
 ---
 
@@ -46,7 +46,7 @@ Next quick wins
   - Implemented via STRIPE_WEBHOOK_SECRETS with verification loop.
 - [ ] Subscribe only to necessary events in Dashboard (reduce noise):
   - `checkout.session.*`, `customer.subscription.*`, `invoice.*`, `customer.*`
-  - Backend safety net added: `STRIPE_WEBHOOK_ALLOWED_EVENTS` allowlist filters non-matching events server‑side and emits `stripe.webhook.ignored` metric.
+  - Backend safety net added: `STRIPE_WEBHOOK_ALLOWED_EVENTS` allowlist filters non-matching events server‑side and emits `stripe.webhook.ignored` metric; we also emit `stripe.webhook.received` for overall intake visibility.
 
 Files to touch
 
@@ -103,9 +103,9 @@ Files to touch
 
 ### 5) Tax readiness (optional but recommended)
 
-- [ ] If enabling Stripe Tax: set `automatic_tax = { enabled: true }` on subscriptions.
+- [x] If enabling Stripe Tax: set `automatic_tax = { enabled: true }` on subscriptions.
 - [ ] Collect billing address (or use Elements Address) as needed for tax.
-  - Backend wiring added: honors `STRIPE_AUTOMATIC_TAX_ENABLED=true` to send `automatic_tax: { enabled: true }` for both Checkout and Elements flows; tests added.
+  - Implemented behind feature flag: when `STRIPE_AUTOMATIC_TAX_ENABLED=true`, backend sends `automatic_tax: { enabled: true }` for both Checkout and Elements flows; tests cover both paths.
 
 Files to touch
 
@@ -187,7 +187,8 @@ Refs
 
 - [ ] Sentry: add breadcrumbs/tags (user id, plan, price id, invoice id) — no PII.
 - [ ] Metrics: count webhook receipts, duplicates skipped, failures, subscription state transitions.
-  - Added metrics: `stripe.webhook.queued`, `stripe.webhook.duplicate`, `stripe.webhook.invalid_signature`, `stripe.webhook.ignored`, `stripe.checkout.completed`, `stripe.subscription.event`, `stripe.invoice.paid`, `stripe.invoice.failed`, `stripe.invoice.action_required`.
+  - Added metrics (backend): `stripe.webhook.received`, `stripe.webhook.queued`, `stripe.webhook.duplicate`, `stripe.webhook.invalid_signature`, `stripe.webhook.ignored`, `stripe.checkout.completed`, `stripe.subscription.event`, `stripe.invoice.paid`, `stripe.invoice.failed`, `stripe.invoice.action_required`.
+  - Added Sentry tags on webhook/billing spans: `subscription_status`, `invoice_id`, `price_id`, plus user/plan context without PII.
 - [ ] Tests (minimum):
   - [x] Webhook de-dup logic (unit tests passing).
   - [x] subscription.created/updated/deleted → plan mapping (via reconciliation + tests).
