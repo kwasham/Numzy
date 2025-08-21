@@ -54,6 +54,7 @@ Files to touch
 - `backend/app/core/config.py` (multiple secrets; env parsing)
 - `backend/app/core/tasks.py` or `backend/app/worker.py` (Dramatiq jobs)
 - Alembic migration for `stripe_webhook_events` (event_id unique, processed_at)
+- Optional: `scripts/stripe_prune_webhook.py` — CLI to prune Dashboard webhook events to the recommended set.
 
 Notes
 
