@@ -100,6 +100,31 @@ class StripeForPortal:
             return {"data": [{"id": "cus_123"}]}
 
 
+class StripeForAutomaticTax:
+    class checkout:
+        class Session:
+            captured = None
+            @staticmethod
+            def create(**kwargs):
+                StripeForAutomaticTax.checkout.Session.captured = kwargs
+                return {"id": "cs_1", "url": "https://checkout.example/sess"}
+    class Customer:
+        @staticmethod
+        def create(email=None):
+            return {"id": "cus_tax_1"}
+    class Subscription:
+        class latest_invoice:
+            class payment_intent:
+                pass
+        @staticmethod
+        def create(**kwargs):
+            # Simulate returning expanded payment intent
+            return {
+                "id": "sub_tax_1",
+                "latest_invoice": {"payment_intent": {"client_secret": "sec_tax"}},
+            }
+
+
 class StripeForPaymentStates:
     class Subscription:
         @staticmethod
@@ -247,3 +272,29 @@ def test_get_payment_intent_client_secret_by_subscription_or_invoice(monkeypatch
     r2 = client.get("/billing/payment-intent", params={"invoice_id": "in_2"})
     assert r2.status_code == 200
     assert r2.json()["client_secret"] == "sec_456"
+
+
+def test_automatic_tax_parameters_are_passed(monkeypatch):
+    from app.core import config as cfg
+    # Enable automatic tax
+    monkeypatch.setattr(cfg.settings, "STRIPE_AUTOMATIC_TAX_ENABLED", True, raising=False)
+
+    # Patch Stripe for both checkout and elements init
+    import app.api.routes.billing as billing_mod
+    monkeypatch.setattr(billing_mod, "stripe", StripeForAutomaticTax)
+
+    # Prepare app with a user lacking a customer id (so customer is created)
+    user = DummyUser(plan_value="free", customer_id=None)
+    app = _mk_app(user, _yield_db)
+    client = TestClient(app)
+
+    # Checkout path
+    r = client.post("/billing/checkout", json={"price_id": "price_pro_month"})
+    assert r.status_code == 200
+    captured = StripeForAutomaticTax.checkout.Session.captured
+    assert captured is not None
+    assert captured.get("automatic_tax") == {"enabled": True}
+
+    # Elements init path should also pass automatic_tax
+    resp = client.post("/billing/elements/init", json={"price_id": "price_pro_month"})
+    assert resp.status_code == 200

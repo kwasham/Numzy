@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     STRIPE_LOOKUP_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_TEAM_MONTHLY")
     # Optional: Stripe Billing Portal configuration ID
     STRIPE_PORTAL_CONFIGURATION_ID: Optional[str] = Field(default=None, env="STRIPE_PORTAL_CONFIGURATION_ID")
+    # Optional: enable Stripe automatic tax on subscriptions/checkout
+    STRIPE_AUTOMATIC_TAX_ENABLED: bool = Field(default=False, env="STRIPE_AUTOMATIC_TAX_ENABLED")
     
     # Legacy Config class no longer required; using model_config above
 

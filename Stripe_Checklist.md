@@ -105,6 +105,7 @@ Files to touch
 
 - [ ] If enabling Stripe Tax: set `automatic_tax = { enabled: true }` on subscriptions.
 - [ ] Collect billing address (or use Elements Address) as needed for tax.
+  - Backend wiring added: honors `STRIPE_AUTOMATIC_TAX_ENABLED=true` to send `automatic_tax: { enabled: true }` for both Checkout and Elements flows; tests added.
 
 Files to touch
 

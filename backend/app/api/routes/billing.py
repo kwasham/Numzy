@@ -74,6 +74,8 @@ async def create_checkout_session(
         request_opts = {}
         if idempotency_key:
             request_opts["idempotency_key"] = idempotency_key
+        # Optional automatic tax
+        automatic_tax = {"enabled": True} if getattr(settings, "STRIPE_AUTOMATIC_TAX_ENABLED", False) else None
         session = stripe.checkout.Session.create(  # type: ignore
             mode="subscription",
             customer=customer_id,
@@ -83,6 +85,7 @@ async def create_checkout_session(
             client_reference_id=getattr(user, "clerk_id", None),
             allow_promotion_codes=True,
             billing_address_collection="auto",
+            **({"automatic_tax": automatic_tax} if automatic_tax else {}),
             **request_opts,
         )
     except Exception as e:  # pragma: no cover
@@ -151,6 +154,7 @@ async def init_elements_subscription(
         request_opts = {}
         if idempotency_key:
             request_opts["idempotency_key"] = idempotency_key
+        automatic_tax = {"enabled": True} if getattr(settings, "STRIPE_AUTOMATIC_TAX_ENABLED", False) else None
         sub = stripe.Subscription.create(  # type: ignore
             customer=customer_id,
             items=[{"price": price_id}],
@@ -158,6 +162,7 @@ async def init_elements_subscription(
             expand=["latest_invoice.payment_intent"],
             metadata={"user_id": str(getattr(user, "id", "")), "clerk_id": getattr(user, "clerk_id", None) or ""},
             payment_settings={"save_default_payment_method": "on_subscription"},
+            **({"automatic_tax": automatic_tax} if automatic_tax else {}),
             **request_opts,
         )
     except Exception as e:  # pragma: no cover
