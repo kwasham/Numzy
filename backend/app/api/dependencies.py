@@ -76,8 +76,9 @@ def _get_plan_limits(plan: PlanType) -> dict:
     Defaults to FREE if plan is unknown.
     """
     limits = {
-        PlanType.FREE: {"upload_per_min": 10, "reprocess_per_min": 5},
-        PlanType.PRO: {"upload_per_min": 60, "reprocess_per_min": 30},
+    PlanType.FREE: {"upload_per_min": 10, "reprocess_per_min": 5},
+    PlanType.PERSONAL: {"upload_per_min": 20, "reprocess_per_min": 10},
+    PlanType.PRO: {"upload_per_min": 60, "reprocess_per_min": 30},
         PlanType.BUSINESS: {"upload_per_min": 120, "reprocess_per_min": 60},
         PlanType.ENTERPRISE: {"upload_per_min": 300, "reprocess_per_min": 150},
     }

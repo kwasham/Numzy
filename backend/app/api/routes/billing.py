@@ -370,7 +370,7 @@ async def get_billing_status(
 
     # Build a lightweight catalog of plans with current Stripe prices (prefer lookup keys)
     catalog = {
-        "startup": {"name": "Startup", "currency": "USD", "price": 0, "price_id": None},
+        "free": {"name": "Free", "currency": "USD", "price": 0, "price_id": None},
     }
     try:
         def _resolve_price_by_lookup(lookup_key: str | None) -> dict | None:
@@ -383,30 +383,41 @@ async def get_billing_status(
             except Exception:
                 return None
 
-        pro_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PRO_MONTHLY", None))
-        if not pro_price and settings.STRIPE_PRICE_PRO_MONTHLY:
-            pro_price = stripe.Price.retrieve(settings.STRIPE_PRICE_PRO_MONTHLY)  # type: ignore
+        personal_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PERSONAL_MONTHLY", None))
+        if personal_price:
+            unit = personal_price.get("unit_amount") or 0
+            currency = (personal_price.get("currency") or "usd").upper()
+            catalog["personal"] = {
+                "name": "Personal",
+                "currency": currency,
+                "price": float(unit) / 100.0,
+                "price_id": personal_price.get("id"),
+            }
+
+        pro_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PRO_MONTHLY", None)) or (
+            stripe.Price.retrieve(settings.STRIPE_PRICE_PRO_MONTHLY) if settings.STRIPE_PRICE_PRO_MONTHLY else None  # type: ignore
+        )
         if pro_price:
             unit = pro_price.get("unit_amount") or 0
             currency = (pro_price.get("currency") or "usd").upper()
-            catalog["standard"] = {
-                "name": "Standard",
+            catalog["pro"] = {
+                "name": "Pro",
                 "currency": currency,
                 "price": float(unit) / 100.0,
                 "price_id": pro_price.get("id"),
             }
 
-        team_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_TEAM_MONTHLY", None))
-        if not team_price and settings.STRIPE_PRICE_TEAM_MONTHLY:
-            team_price = stripe.Price.retrieve(settings.STRIPE_PRICE_TEAM_MONTHLY)  # type: ignore
-        if team_price:
-            unit = team_price.get("unit_amount") or 0
-            currency = (team_price.get("currency") or "usd").upper()
+        business_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_BUSINESS_MONTHLY", None)) or (
+            stripe.Price.retrieve(settings.STRIPE_PRICE_TEAM_MONTHLY) if settings.STRIPE_PRICE_TEAM_MONTHLY else None  # type: ignore
+        )
+        if business_price:
+            unit = business_price.get("unit_amount") or 0
+            currency = (business_price.get("currency") or "usd").upper()
             catalog["business"] = {
                 "name": "Business",
                 "currency": currency,
                 "price": float(unit) / 100.0,
-                "price_id": team_price.get("id"),
+                "price_id": business_price.get("id"),
             }
     except Exception as e:  # pragma: no cover
         logger.warning("Failed to build plan catalog from Stripe: %s", e)
@@ -416,9 +427,11 @@ async def get_billing_status(
         target_plan: PlanType | None = None
         if sub_price_id:
             # Direct match against env IDs (fallback)
-            if sub_price_id == settings.STRIPE_PRICE_PRO_MONTHLY or sub_price_id == settings.STRIPE_PRICE_PRO_YEARLY:
+            if sub_price_id == settings.STRIPE_PRICE_PERSONAL_MONTHLY:
+                target_plan = PlanType.PERSONAL
+            elif sub_price_id == settings.STRIPE_PRICE_PRO_MONTHLY or sub_price_id == settings.STRIPE_PRICE_PRO_YEARLY:
                 target_plan = PlanType.PRO
-            elif sub_price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
+            elif sub_price_id == settings.STRIPE_PRICE_BUSINESS_MONTHLY or sub_price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                 target_plan = PlanType.BUSINESS
             # If lookup keys configured, try to resolve and map
             if target_plan is None and any([
@@ -429,9 +442,11 @@ async def get_billing_status(
                 try:
                     pr = stripe.Price.retrieve(sub_price_id)  # type: ignore
                     lk = pr.get("lookup_key")
-                    if lk and lk in (settings.STRIPE_LOOKUP_PRO_MONTHLY, settings.STRIPE_LOOKUP_PRO_YEARLY):
+                    if lk and lk in (settings.STRIPE_LOOKUP_PERSONAL_MONTHLY,):
+                        target_plan = PlanType.PERSONAL
+                    elif lk and lk in (settings.STRIPE_LOOKUP_PRO_MONTHLY, settings.STRIPE_LOOKUP_PRO_YEARLY):
                         target_plan = PlanType.PRO
-                    elif lk and lk in (settings.STRIPE_LOOKUP_TEAM_MONTHLY,):
+                    elif lk and lk in (settings.STRIPE_LOOKUP_BUSINESS_MONTHLY, settings.STRIPE_LOOKUP_TEAM_MONTHLY):
                         target_plan = PlanType.BUSINESS
                 except Exception:
                     pass

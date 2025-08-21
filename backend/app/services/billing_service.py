@@ -17,8 +17,9 @@ class BillingService:
     """Stub billing service providing quota and limit information."""
 
     DEFAULT_QUOTAS = {
-        PlanType.FREE: 50,
-        PlanType.PRO: 500,
+    PlanType.FREE: 50,
+    PlanType.PERSONAL: 100,
+    PlanType.PRO: 500,
         PlanType.BUSINESS: 5000,
         PlanType.ENTERPRISE: float("inf"),
     }

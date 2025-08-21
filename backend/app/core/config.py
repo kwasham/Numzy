@@ -123,10 +123,14 @@ class Settings(BaseSettings):
     STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_MONTHLY")
     STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_YEARLY")
     STRIPE_PRICE_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_TEAM_MONTHLY")
+    STRIPE_PRICE_PERSONAL_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PERSONAL_MONTHLY")
+    STRIPE_PRICE_BUSINESS_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_BUSINESS_MONTHLY")
     # Optional: prefer price.lookup_key instead of hard-coded IDs
     STRIPE_LOOKUP_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_MONTHLY")
     STRIPE_LOOKUP_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_YEARLY")
     STRIPE_LOOKUP_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_TEAM_MONTHLY")
+    STRIPE_LOOKUP_PERSONAL_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PERSONAL_MONTHLY")
+    STRIPE_LOOKUP_BUSINESS_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_BUSINESS_MONTHLY")
     # Optional: Stripe Billing Portal configuration ID
     STRIPE_PORTAL_CONFIGURATION_ID: Optional[str] = Field(default=None, env="STRIPE_PORTAL_CONFIGURATION_ID")
     # Optional: enable Stripe automatic tax on subscriptions/checkout

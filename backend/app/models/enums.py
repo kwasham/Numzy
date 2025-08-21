@@ -17,6 +17,7 @@ class PlanType(str, Enum):
     """Subscription tier for a user or organisation."""
 
     FREE = "free"
+    PERSONAL = "personal"
     PRO = "pro"
     BUSINESS = "business"
     ENTERPRISE = "enterprise"
