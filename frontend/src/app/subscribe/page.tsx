@@ -261,19 +261,37 @@ function CheckoutForm() {
 	const stripe = useStripe();
 	const elements = useElements();
 	const [submitting, setSubmitting] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
 
 	const handleSubmit = async () => {
 		if (!stripe || !elements) return;
 		setSubmitting(true);
-		const { error } = await stripe.confirmPayment({
+		setErr(null);
+		const result = await stripe.confirmPayment({
 			elements,
+			redirect: "if_required",
 			confirmParams: {
 				return_url: `${process.env.NEXT_PUBLIC_FRONTEND_URL || globalThis.location.origin}/dashboard?checkout=success`,
 			},
 		});
-		if (error) {
-			// minimal UX; page already holds state, user can retry
-			console.error(error);
+		if (result.error) {
+			// Extract a useful message
+			const msg =
+				result.error.message || "Your payment couldn’t be completed. Please check your card or try another method.";
+			setErr(msg);
+			// Log with more context for debugging without leaking secrets
+			try {
+				const safe = {
+					type: result.error.type,
+					code: result.error.code,
+					message: result.error.message,
+					pi_status: result.paymentIntent?.status,
+					pi_id: result.paymentIntent?.id,
+				};
+				console.warn("Stripe confirmPayment error", safe);
+			} catch {
+				// ignore
+			}
 		}
 		setSubmitting(false);
 	};
@@ -281,6 +299,11 @@ function CheckoutForm() {
 	return (
 		<Stack spacing={2}>
 			<PaymentElement options={{ layout: "tabs" }} />
+			{err ? (
+				<Typography color="error" variant="body2">
+					{err}
+				</Typography>
+			) : null}
 			<Button variant="contained" onClick={handleSubmit} disabled={submitting}>
 				{submitting ? "Processing…" : "Pay"}
 			</Button>

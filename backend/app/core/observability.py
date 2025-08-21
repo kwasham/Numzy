@@ -66,4 +66,54 @@ def init_sentry(service: str) -> bool:
 	return True
 
 
-__all__ = ["init_sentry"]
+from typing import Any, Dict, Optional
+
+
+def sentry_set_tags(tags: Dict[str, Any]) -> None:
+	"""Best-effort: set tags on current Sentry scope (strings only)."""
+	try:
+		if not (_SENTRY_AVAILABLE and settings.SENTRY_DSN):
+			return
+		import sentry_sdk  # type: ignore
+		with sentry_sdk.configure_scope() as scope:  # type: ignore
+			for k, v in (tags or {}).items():
+				# Avoid PII; coerce to short strings
+				scope.set_tag(str(k), str(v)[:128] if v is not None else "")
+	except Exception:
+		return
+
+
+def sentry_breadcrumb(category: str, message: str, level: str = "info", data: Optional[Dict[str, Any]] = None) -> None:
+	"""Best-effort: add a breadcrumb for important lifecycle steps."""
+	try:
+		if not (_SENTRY_AVAILABLE and settings.SENTRY_DSN):
+			return
+		import sentry_sdk  # type: ignore
+		sentry_sdk.add_breadcrumb(  # type: ignore
+			category=category,
+			message=message,
+			level=level,
+			data=data or {},
+		)
+	except Exception:
+		return
+
+
+def sentry_metric_inc(name: str, value: int = 1, tags: Optional[Dict[str, Any]] = None) -> None:
+	"""Best-effort: increment a metric using Sentry Metrics if available.
+
+	Falls back to no-op when metrics are unavailable.
+	"""
+	try:
+		if not (_SENTRY_AVAILABLE and settings.SENTRY_DSN):
+			return
+		from sentry_sdk import metrics  # type: ignore
+		# Sentry Python SDK expects numeric value and optional tags
+		# Coerce tag values to short strings to avoid PII/large payloads
+		safe_tags = {str(k): str(v)[:64] for k, v in (tags or {}).items()}
+		metrics.increment(name, value=value, tags=safe_tags)  # type: ignore
+	except Exception:
+		return
+
+
+__all__ = ["init_sentry", "sentry_set_tags", "sentry_breadcrumb", "sentry_metric_inc"]

@@ -116,3 +116,20 @@ def test_invoice_failed_and_action_required_paths(app_client):
         headers={"stripe-signature": "stub"},
     )
     assert resp2.status_code == 200
+
+
+def test_webhook_rejects_when_all_secrets_invalid(monkeypatch, app_client):
+    """If none of the configured secrets validate, the endpoint should 400."""
+    from app.core import config as cfg
+    # Force only bad secrets so DummyStripe.Webhook raises every time
+    monkeypatch.setattr(cfg.settings, "STRIPE_WEBHOOK_SECRETS", "bad", raising=False)
+
+    event = _fake_event("checkout.session.completed", {"id": "cs_bad"}, event_id="evt_bad")
+    payload = json.dumps(event).encode("utf-8")
+
+    resp = app_client.post(
+        "/webhooks/stripe",
+        data=payload,
+        headers={"stripe-signature": "stub"},
+    )
+    assert resp.status_code in (400, 401)

@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
+# Observability helpers (best-effort; no-ops when Sentry/DSN unavailable)
+from app.core.observability import (
+    sentry_breadcrumb,
+    sentry_metric_inc,
+    sentry_set_tags,
+)
+
 try:
     import stripe  # type: ignore
 except Exception as e:  # pragma: no cover
@@ -81,6 +88,21 @@ async def create_checkout_session(
     except Exception as e:  # pragma: no cover
         logger.exception("Failed to create checkout session: %s", e)
         raise HTTPException(status_code=500, detail="Unable to create checkout session")
+
+    # Observability (non-PII)
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="checkout.session.created",
+            data={
+                "price_id": chosen_price,
+                "customer_id": customer_id,
+                "session_id": session.get("id"),
+            },
+        )
+        sentry_metric_inc("stripe.checkout.session.created", tags={"price_id": chosen_price})
+    except Exception:
+        pass
 
     return JSONResponse({"url": session["url"]})
 
@@ -152,6 +174,21 @@ async def init_elements_subscription(
         logger.exception("Subscription created but no client_secret available: %s", e)
         raise HTTPException(status_code=500, detail="Failed to initialize payment")
 
+    # Observability (non-PII)
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="subscription.created_default_incomplete",
+            data={
+                "price_id": price_id,
+                "customer_id": customer_id,
+                "subscription_id": sub.get("id"),
+            },
+        )
+        sentry_metric_inc("stripe.subscription.created_default_incomplete", tags={"price_id": price_id})
+    except Exception:
+        pass
+
     return JSONResponse(
         {
             "subscription_id": sub.get("id"),
@@ -211,6 +248,20 @@ async def create_billing_portal_session(
         logger.exception("Failed to create billing portal session: %s", e)
         raise HTTPException(status_code=500, detail="Unable to create billing portal session")
 
+    # Observability (non-PII)
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="billing_portal.session.created",
+            data={
+                "customer_id": customer_id,
+                "session_id": session.get("id"),
+            },
+        )
+        sentry_metric_inc("stripe.billing_portal.session.created")
+    except Exception:
+        pass
+
     return JSONResponse({"url": session["url"]})
 
 
@@ -246,9 +297,17 @@ async def get_billing_status(
 
     subscription_summary = None
     sub_price_id = None
+    payment_state: str | None = None
+    action_meta: dict | None = None  # minimal info to drive client prompts
     if customer_id:
         try:
-            subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)  # type: ignore
+            # Fetch most recent subscription; try to expand latest invoice/payment intent for action states
+            subs = stripe.Subscription.list(  # type: ignore
+                customer=customer_id,
+                status="all",
+                limit=1,
+                expand=["data.latest_invoice.payment_intent"],
+            )
             subs_data = subs.get("data", []) if isinstance(subs, dict) else []
             if subs_data:
                 sub = subs_data[0]
@@ -268,6 +327,28 @@ async def get_billing_status(
                         period_end = _dt.datetime.fromtimestamp(int(cpe), _dt.UTC).isoformat().replace("+00:00", "Z")
                 except Exception:
                     period_end = None
+
+                # Determine payment state
+                try:
+                    sub_status = (sub.get("status") or "").lower()
+                    if sub_status in ("past_due", "unpaid"):
+                        payment_state = "past_due"
+                    else:
+                        # Inspect latest invoice payment_intent if expanded
+                        latest_invoice = sub.get("latest_invoice") or {}
+                        pi = latest_invoice.get("payment_intent") if isinstance(latest_invoice, dict) else None
+                        pi_status = (pi.get("status") or "").lower() if isinstance(pi, dict) else ""
+                        if pi_status in ("requires_action", "requires_payment_method"):
+                            payment_state = "requires_action"
+                            action_meta = {
+                                "invoice_id": latest_invoice.get("id") if isinstance(latest_invoice, dict) else None,
+                                "payment_intent_id": pi.get("id") if isinstance(pi, dict) else None,
+                            }
+                        else:
+                            payment_state = "ok"
+                except Exception:
+                    payment_state = payment_state or None
+
                 subscription_summary = {
                     "id": sub.get("id"),
                     "status": sub.get("status"),
@@ -357,11 +438,151 @@ async def get_billing_status(
     except Exception as _recon_ex:  # pragma: no cover
         logger.warning("Failed to reconcile user plan from subscription: %s", _recon_ex)
 
+    # Observability: annotate current billing state (non-PII)
+    try:
+        sentry_set_tags({
+            "billing.plan": str(plan_value),
+            "billing.payment_state": str(payment_state or ""),
+            "billing.subscription_status": str((subscription_summary or {}).get("status")),
+        })
+    except Exception:
+        pass
+
     return JSONResponse(
         {
             "plan": plan_value,
             "stripe_customer_id": customer_id,
             "subscription": subscription_summary,
+            "payment_state": payment_state or (subscription_summary.get("status") if subscription_summary else None),
+            "action": action_meta,
             "catalog": catalog,
         }
     )
+
+
+@router.get("/payment-intent")
+async def get_payment_intent_client_secret(
+    subscription_id: str | None = None,
+    invoice_id: str | None = None,
+):
+    """Return client_secret for the latest invoice payment intent for recovery flows.
+
+    Either provide subscription_id (preferred) to expand latest_invoice.payment_intent,
+    or provide invoice_id to retrieve its payment_intent.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    try:
+        client_secret = None
+        if subscription_id:
+            sub = stripe.Subscription.retrieve(  # type: ignore
+                subscription_id,
+                expand=["latest_invoice.payment_intent"],
+            )
+            inv = sub.get("latest_invoice", {}) if isinstance(sub, dict) else {}
+            pi = inv.get("payment_intent", {}) if isinstance(inv, dict) else {}
+            client_secret = pi.get("client_secret")
+        elif invoice_id:
+            inv = stripe.Invoice.retrieve(  # type: ignore
+                invoice_id,
+                expand=["payment_intent"],
+            )
+            pi = inv.get("payment_intent", {}) if isinstance(inv, dict) else {}
+            client_secret = pi.get("client_secret")
+        else:
+            raise HTTPException(status_code=400, detail="subscription_id or invoice_id is required")
+        if not client_secret:
+            raise HTTPException(status_code=404, detail="No client_secret available")
+        return JSONResponse({"client_secret": client_secret})
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover
+        logger.exception("Failed to retrieve payment intent client_secret: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to retrieve payment intent")
+
+    # If we reached here, we returned earlier. For completeness, add a breadcrumb before returns above.
+
+
+@router.post("/subscription/payment-method")
+async def update_subscription_payment_method(
+    subscription_id: str = Body(..., embed=True),
+    payment_method_id: str = Body(..., embed=True),
+    invoice_id: str | None = Body(None, embed=True),
+    user: User = Depends(get_user),
+):
+    """Attach a PaymentMethod to the customer and set it as the subscription default.
+
+    Optionally attempts to pay a specific invoice after updating the default PM.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    try:
+        # Retrieve subscription to get the customer id
+        sub = stripe.Subscription.retrieve(subscription_id)  # type: ignore
+        customer_id = sub.get("customer") if isinstance(sub, dict) else None
+        if not customer_id:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+
+        # Ensure the payment method is attached to the customer
+        try:
+            pm = stripe.PaymentMethod.retrieve(payment_method_id)  # type: ignore
+            pm_customer = pm.get("customer") if isinstance(pm, dict) else None
+            if not pm_customer:
+                stripe.PaymentMethod.attach(payment_method_id, customer=customer_id)  # type: ignore
+        except Exception as e:  # pragma: no cover
+            logger.exception("Failed to attach payment method %s: %s", payment_method_id, e)
+            raise HTTPException(status_code=400, detail="Invalid or unattached payment method")
+
+        # Set as default for the subscription
+        stripe.Subscription.modify(  # type: ignore
+            subscription_id,
+            default_payment_method=payment_method_id,
+        )
+
+        # Best-effort: if an invoice is provided, attempt to pay it now
+        paid_invoice = None
+        if invoice_id:
+            try:
+                paid_invoice = stripe.Invoice.pay(invoice_id)  # type: ignore
+            except Exception as e:  # pragma: no cover
+                logger.warning("Attempt to pay invoice %s failed: %s", invoice_id, e)
+
+        # Observability (non-PII)
+        try:
+            sentry_breadcrumb(
+                category="stripe",
+                message="subscription.payment_method.updated",
+                data={
+                    "subscription_id": subscription_id,
+                    "invoice_id": invoice_id,
+                    "paid": bool(paid_invoice and isinstance(paid_invoice, dict) and paid_invoice.get("paid")),
+                },
+            )
+            sentry_metric_inc(
+                "stripe.subscription.payment_method.updated",
+                tags={"paid_invoice": str(bool(paid_invoice and isinstance(paid_invoice, dict) and paid_invoice.get("paid")))},
+            )
+        except Exception:
+            pass
+
+        return JSONResponse({
+            "ok": True,
+            "subscription_id": subscription_id,
+            "payment_method_id": payment_method_id,
+            "invoice_paid": bool(paid_invoice and isinstance(paid_invoice, dict) and paid_invoice.get("paid")),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover
+        logger.exception("Failed to update subscription payment method: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to update payment method")

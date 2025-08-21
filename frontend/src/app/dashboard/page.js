@@ -14,6 +14,7 @@ import { WarningIcon } from "@phosphor-icons/react/dist/ssr/Warning";
 
 import { appConfig } from "@/config/app";
 import { dayjs } from "@/lib/dayjs";
+import { DunningEntrypoint } from "@/components/billing/dunning-entrypoint";
 import { PlanBadge } from "@/components/billing/plan-badge";
 import { AppChat } from "@/components/dashboard/overview/app-chat";
 import { AppLimits } from "@/components/dashboard/overview/app-limits";
@@ -37,6 +38,7 @@ export default function Page() {
 			}}
 		>
 			<Stack spacing={4}>
+				<DunningEntrypoint />
 				<CheckoutReturnNotifier />
 				<Stack direction={{ xs: "column", sm: "row" }} spacing={3} sx={{ alignItems: "center" }}>
 					<Box sx={{ flex: "1 1 auto", display: "flex", gap: 1, alignItems: "center" }}>

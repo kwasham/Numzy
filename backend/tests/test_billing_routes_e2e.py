@@ -53,13 +53,15 @@ class StripeForReconViaID:
             return {"id": price_id, "unit_amount": 1200, "currency": "usd"}
     class Subscription:
         @staticmethod
-        def list(customer=None, status="all", limit=1):
-            return {"data": [{
-                "id": "sub_1",
-                "status": "active",
-                "current_period_end": 1700000000,
-                "items": {"data": [{"price": {"id": "price_pro_month"}}]},
-            }]}
+        def list(customer=None, status="all", limit=1, **kwargs):
+            return {
+                "data": [{
+                    "id": "sub_1",
+                    "status": "active",
+                    "current_period_end": 1700000000,
+                    "items": {"data": [{"price": {"id": "price_pro_month"}}]},
+                }]
+            }
 
 
 class StripeForReconViaLookupKey:
@@ -73,13 +75,15 @@ class StripeForReconViaLookupKey:
             return {"data": []}
     class Subscription:
         @staticmethod
-        def list(customer=None, status="all", limit=1):
-            return {"data": [{
-                "id": "sub_2",
-                "status": "active",
-                "current_period_end": 1700000000,
-                "items": {"data": [{"price": {"id": "price_unknown_maps_via_lookup"}}]},
-            }]}
+        def list(customer=None, status="all", limit=1, **kwargs):
+            return {
+                "data": [{
+                    "id": "sub_2",
+                    "status": "active",
+                    "current_period_end": 1700000000,
+                    "items": {"data": [{"price": {"id": "price_unknown_maps_via_lookup"}}]},
+                }]
+            }
 
 
 class StripeForPortal:
@@ -94,6 +98,41 @@ class StripeForPortal:
         @staticmethod
         def list(email=None, limit=1):
             return {"data": [{"id": "cus_123"}]}
+
+
+class StripeForPaymentStates:
+    class Subscription:
+        @staticmethod
+        def list(customer=None, status="all", limit=1, expand=None):
+            # Simulate requires_action on payment_intent via expanded invoice
+            return {
+                "data": [{
+                    "id": "sub_pa",
+                    "status": "active",
+                    "current_period_end": 1700000000,
+                    "items": {"data": [{"price": {"id": "price_pro_month"}}]},
+                    "latest_invoice": {
+                        "id": "in_1",
+                        "payment_intent": {"id": "pi_1", "status": "requires_action", "client_secret": "sec_123"},
+                    },
+                }]
+            }
+        @staticmethod
+        def retrieve(subscription_id, expand=None):
+            return {
+                "id": subscription_id,
+                "latest_invoice": {
+                    "id": "in_1",
+                    "payment_intent": {"id": "pi_1", "client_secret": "sec_123"},
+                },
+            }
+    class Invoice:
+        @staticmethod
+        def retrieve(invoice_id, expand=None):
+            return {
+                "id": invoice_id,
+                "payment_intent": {"id": "pi_2", "client_secret": "sec_456"},
+            }
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +212,38 @@ def test_portal_uses_configuration_id(monkeypatch):
     captured = StripeForPortal.billing_portal.Session.captured
     assert captured is not None
     assert captured.get("configuration") == "pcfg_123"
+
+
+def test_status_exposes_requires_action_and_action_meta(monkeypatch):
+    from app.core import config as cfg
+    monkeypatch.setattr(cfg.settings, "STRIPE_PRICE_PRO_MONTHLY", "price_pro_month", raising=False)
+
+    import app.api.routes.billing as billing_mod
+    monkeypatch.setattr(billing_mod, "stripe", StripeForPaymentStates)
+
+    user = DummyUser(plan_value="pro", customer_id="cus_act")
+    app = _mk_app(user, _yield_db)
+    client = TestClient(app)
+
+    r = client.get("/billing/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["payment_state"] == "requires_action"
+    assert body["action"]["invoice_id"] == "in_1"
+    assert body["action"]["payment_intent_id"] == "pi_1"
+
+
+def test_get_payment_intent_client_secret_by_subscription_or_invoice(monkeypatch):
+    import app.api.routes.billing as billing_mod
+    monkeypatch.setattr(billing_mod, "stripe", StripeForPaymentStates)
+
+    app = _mk_app(DummyUser(), _yield_db)
+    client = TestClient(app)
+
+    r = client.get("/billing/payment-intent", params={"subscription_id": "sub_pa"})
+    assert r.status_code == 200
+    assert r.json()["client_secret"] == "sec_123"
+
+    r2 = client.get("/billing/payment-intent", params={"invoice_id": "in_2"})
+    assert r2.status_code == 200
+    assert r2.json()["client_secret"] == "sec_456"

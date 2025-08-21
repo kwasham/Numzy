@@ -28,7 +28,7 @@ Last updated: 2025-08-18
 
 Next quick wins
 
-- [ ] Frontend prompts for SCA/payment failure states.
+- [x] Frontend prompts for SCA/payment failure states.
 - [ ] Register Apple/Google Pay (prod domain, HTTPS) and enable wallet buttons.
 - [ ] Add Address Element and/or Stripe Tax configuration.
 
@@ -51,12 +51,13 @@ Files to touch
 
 - `backend/app/api/routes/stripe_webhooks.py` (raw body verify, 2xx fast, enqueue, de-dup)
 - `backend/app/core/config.py` (multiple secrets; env parsing)
-- `backend/app/core/tasks.py` or `backend/app/app/worker.py` (Dramatiq jobs)
+- `backend/app/core/tasks.py` or `backend/app/worker.py` (Dramatiq jobs)
 - Alembic migration for `stripe_webhook_events` (event_id unique, processed_at)
 
 Notes
 
 - See: Stripe docs “Receive Stripe events in your webhook endpoint — Best practices”.
+  - Verified: Async offload implemented via Dramatiq actor `process_stripe_event` (see `backend/app/core/tasks.py`) and enqueued in `backend/app/api/routes/stripe_webhooks.py`; tests cover enqueue path (`backend/tests/test_async_offload.py`).
 
 ### 2) Subscription lifecycle correctness
 
@@ -92,7 +93,7 @@ Files to touch
 
 - [x] Always create/retrieve a Stripe Customer and persist `stripe_customer_id` for Clerk user.
 - [x] For Elements flow, set `payment_settings.save_default_payment_method = on_subscription`.
-- [ ] Add an endpoint to update the subscription default payment method (for dunning).
+- [x] Add an endpoint to update the subscription default payment method (for dunning).
 
 Files to touch
 
@@ -124,7 +125,7 @@ Files to touch
 
 - [x] Add Express Checkout Element before Payment Element (Apple/Google Pay enabling deferred to production).
 - [ ] Ensure HTTPS in dev/prod and Apple Pay domain registration before enabling (deferred to production).
-- [ ] Improve error states for `requires_action` (SCA) and `payment_failed` with clear retry CTA.
+- [x] Improve error states for `requires_action` (SCA) and `payment_failed` with clear retry CTA.
 - [ ] Optional Address Element for tax.
 - [x] Keep dark theme Appearance and force remount on theme change (already in place).
 
@@ -146,7 +147,7 @@ Files to touch
 
 ### 3) Layout polish
 
-- [ ] Add `<meta name="color-scheme" content="dark light">` to reduce flash.
+- [x] Add `<meta name="color-scheme" content="dark light">` to reduce flash.
 
 Files to touch
 
@@ -235,13 +236,13 @@ Refs
 - [x] Webhook de-dup
 - [x] Async queue (Dramatiq offload)
 - [x] Multiple webhook secrets
-- [ ] Failure & SCA handlers (backend logging wired; UI prompts pending)
+- [x] Failure & SCA handlers (backend logging + UI prompts + PM update endpoint)
 - [x] Pricing via lookup keys
 - [x] Idempotency on create calls
 - [x] Express Checkout wiring (Apple/Google enabling deferred to prod)
 - [ ] Address/Tax readiness
 - [ ] Plans UI: hide tiers; yearly toggle
-- [ ] Color-scheme meta
+- [x] Color-scheme meta
 - [x] Portal config verified (API supports configuration ID)
 - [ ] Observability + tests (baseline in place; expand)
 - [ ] Go-live checks
@@ -252,8 +253,8 @@ Refs
 
 1. Frontend UX for payment recovery and SCA
 
-- Show banners/CTAs when subscription is `past_due` or `requires_action`.
-- Add a “Fix payment” flow using Payment Element on top of existing subscription/invoice.
+- Done: Show banners/CTAs when subscription is `past_due` or `requires_action`.
+- Done: Add a “Fix payment” flow using Payment Element on top of existing subscription/invoice.
 
 1. Wallets enablement for production
 
@@ -261,8 +262,8 @@ Refs
 
 1. Payment method management
 
-- Add backend endpoint to update default payment method for a subscription.
-- Link from dunning banner to either Portal or in-app PM update.
+- Done: Backend endpoint to update default payment method for a subscription.
+- Done: Dunning banner links to in-app recovery and Portal.
 
 1. Pricing and plans UI
 

@@ -13,6 +13,7 @@ from app.models.tables import User
 from app.models.enums import PlanType
 from functools import lru_cache
 from app.core.tasks import process_stripe_event
+from app.core.observability import sentry_set_tags, sentry_breadcrumb, sentry_metric_inc
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +96,18 @@ async def stripe_webhook(request: Request):
     # Handle a richer set of common events (no-op DB writes yet; structured logs only)
     event_type: str = event.get("type", "")
     data_object: Dict[str, Any] = event.get("data", {}).get("object", {})
-    try:  # lightweight observability
-        import sentry_sdk  # type: ignore
-        sentry_sdk.set_tag("stripe.event_type", event_type)
-        if isinstance(data_object, dict):
-            if data_object.get("id"):
-                sentry_sdk.set_context("stripe.object", {"id": data_object.get("id"), "object": data_object.get("object")})
-    except Exception:
-        pass
+    # Lightweight observability (no PII)
+    sentry_set_tags({
+        "stripe.event_type": event_type,
+    })
+    if isinstance(data_object, dict) and data_object.get("id"):
+        # Breadcrumb with safe identifiers
+        sentry_breadcrumb(
+            category="stripe",
+            message=f"webhook:{event_type}",
+            level="info",
+            data={"object": data_object.get("object"), "id": data_object.get("id")},
+        )
 
     def _to_iso(ts: Any) -> str | None:
         try:
@@ -116,6 +121,7 @@ async def stripe_webhook(request: Request):
     # Offload processing to Dramatiq and return immediately
     try:
         process_stripe_event.send(event)  # type: ignore[arg-type]
+        sentry_metric_inc("stripe.webhook.queued", tags={"event_type": event_type})
         logger.debug("[stripe] queued event for async processing type=%s id=%s", event_type, data_object.get("id"))
         return JSONResponse(status_code=200, content={"received": True, "queued": True, "type": event_type})
     except Exception as e:
@@ -133,6 +139,7 @@ async def stripe_webhook(request: Request):
                 "[stripe] checkout.session.completed id=%s mode=%s customer=%s email=%s subscription=%s client_ref=%s",
                 sess_id, mode, customer, customer_email, subscription, client_ref,
             )
+            sentry_metric_inc("stripe.checkout.completed")
             # Persist stripe_customer_id on the user when we can safely associate it.
             try:
                 if customer:
@@ -180,6 +187,7 @@ async def stripe_webhook(request: Request):
                 "[stripe] subscription event=%s id=%s status=%s customer=%s price=%s product=%s period_end=%s cancel_at=%s canceled_at=%s",
                 event_type, sub_id, status, customer, price_id, product_id, current_period_end, cancel_at, canceled_at,
             )
+            sentry_metric_inc("stripe.subscription.event", tags={"event_type": event_type, "status": status or ""})
 
             # If subscription was deleted or set to canceled, downgrade user to FREE
             try:
@@ -277,6 +285,7 @@ async def stripe_webhook(request: Request):
                 "[stripe] invoice success id=%s customer=%s subscription=%s amount_paid=%s reason=%s",
                 invoice_id, customer, subscription, amount_paid, billing_reason,
             )
+            sentry_metric_inc("stripe.invoice.paid")
 
         elif event_type in ("invoice.payment_failed",):
             invoice_id = data_object.get("id")
@@ -287,6 +296,7 @@ async def stripe_webhook(request: Request):
                 "[stripe] invoice failed id=%s customer=%s subscription=%s attempts=%s",
                 invoice_id, customer, subscription, attempt_count,
             )
+            sentry_metric_inc("stripe.invoice.failed")
             # Mark user as past_due (soft flag) to drive UI prompts
             try:
                 if customer:
@@ -307,6 +317,7 @@ async def stripe_webhook(request: Request):
                 "[stripe] invoice requires action id=%s customer=%s subscription=%s",
                 invoice_id, customer, subscription,
             )
+            sentry_metric_inc("stripe.invoice.action_required")
             # No DB change; client should be prompted to complete SCA. Status API can surface subscription.status
 
         elif event_type in ("customer.created", "customer.updated"):
