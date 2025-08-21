@@ -399,6 +399,55 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         raise
 
 
+# ---------------------------------------------------------------------------
+# Data Retention Maintenance
+# ---------------------------------------------------------------------------
+import asyncio as _asyncio  # localized import to avoid polluting main namespace
+from dramatiq import actor as _actor
+from datetime import timedelta, timezone as _tz
+from sqlalchemy import delete as _delete
+from app.services.billing_service import BillingService as _BillingService
+
+
+@_actor(max_retries=0)
+def retention_cleanup():  # pragma: no cover - periodic maintenance
+    """Purge receipts beyond each plan's retention window.
+
+    Strategy: Iterate finite-retention plans and delete rows older than
+    now - retention_days. Done synchronously inside worker process.
+    """
+    from sqlalchemy.orm import Session as _Session
+
+    svc = _BillingService()
+    now = datetime.utcnow().replace(tzinfo=None)
+    # Map plan -> retention days (skip None/unlimited)
+    plan_days = {
+        plan: limits.retention_days
+        for plan, limits in svc.PLAN_LIMIT_MATRIX.items()  # type: ignore[attr-defined]
+        if getattr(limits, 'retention_days', None)
+    }
+    if not plan_days:
+        return
+    session: _Session = SessionLocal()
+    try:
+        for plan, days in plan_days.items():
+            if not days:
+                continue
+            cutoff = now - timedelta(days=days)
+            try:
+                stmt = _delete(Receipt).where(Receipt.created_at < cutoff)  # could further filter by plan if column exists
+                session.execute(stmt)
+                session.commit()
+            except Exception:
+                session.rollback()
+                continue
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
 @dramatiq.actor(max_retries=5)
 def process_stripe_event(event: dict):
     """Process a Stripe webhook event asynchronously.

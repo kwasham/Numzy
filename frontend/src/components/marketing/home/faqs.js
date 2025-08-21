@@ -39,9 +39,9 @@ const faqs = [
 	},
 	{
 		id: "FAQ-5",
-		question: "For what kind of projects is the Standard license intended?",
+		question: "Who should choose the Personal plan?",
 		answer:
-			"The Standard license is designed for internal applications in which staff will access the application. An example could be the back-office dashboard of a public-facing e-commerce website in which staff would sign in and manage inventory, customers, etc.",
+			"Personal is ideal for individual users and freelancers who outgrow Free limits and want higher quotas without team collaboration features yet.",
 	},
 ];
 

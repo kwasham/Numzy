@@ -8,9 +8,18 @@ import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 
+import { availablePlans, PLAN_CAPABILITIES, PlanId } from "../../../../../shared/types/plan";
 import { Plan } from "./plan";
 
-export function PlansTable() {
+export function PlansTable({ catalog = {} }) {
+	const [yearly, setYearly] = React.useState(false);
+	const hasYearly = availablePlans(catalog || {}, true).some((pid) => !!catalog?.[pid]?.yearly?.price);
+	const displayPrice = (pid) => {
+		const entry = catalog?.[pid];
+		if (!entry) return PLAN_CAPABILITIES[pid].monthlyPrice || 0;
+		if (yearly && entry.yearly?.price) return (entry.yearly.price / 12).toFixed(2);
+		return (entry.monthly?.price ?? entry.price ?? (PLAN_CAPABILITIES[pid].monthlyPrice || 0)).toFixed(2);
+	};
 	return (
 		<Box sx={{ bgcolor: "var(--mui-palette-background-level1)", py: { xs: "60px", sm: "120px" } }}>
 			<Container maxWidth="lg">
@@ -22,11 +31,13 @@ export function PlansTable() {
 						<Typography color="text.secondary" sx={{ textAlign: "center" }} variant="body1">
 							Join 10,000+ developers &amp; designers using Devias to power modern web projects.
 						</Typography>
-						<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-							<Switch defaultChecked />
-							<Typography variant="body1">Billed annually</Typography>
-							<Chip color="success" label="25% OFF" size="small" />
-						</Stack>
+						{hasYearly && (
+							<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+								<Switch checked={yearly} onChange={() => setYearly((p) => !p)} />
+								<Typography variant="body1">Billed annually</Typography>
+								<Chip color="success" label="Save" size="small" />
+							</Stack>
+						)}
 					</Stack>
 					<div>
 						<Grid container spacing={3}>
@@ -36,58 +47,33 @@ export function PlansTable() {
 									xs: 12,
 								}}
 							>
-								<Plan
-									action={<Button variant="outlined">Select</Button>}
-									currency="USD"
-									description="To familiarize yourself with our tools."
-									features={["Create contracts", "Chat support", "Email alerts"]}
-									id="startup"
-									name="Startup"
-									price={0}
-								/>
-							</Grid>
-							<Grid
-								size={{
-									md: 4,
-									xs: 12,
-								}}
-							>
-								<Plan
-									action={<Button variant="contained">Start free trial</Button>}
-									currency="USD"
-									description="Best for small teams with up to 10 members."
-									features={["All previous", "Highlights reporting", "Data history", "Unlimited users"]}
-									id="standard"
-									name="Standard"
-									popular
-									price={14.99}
-								/>
-							</Grid>
-							<Grid
-								size={{
-									md: 4,
-									xs: 12,
-								}}
-							>
-								<Plan
-									action={
-										<Button color="secondary" variant="contained">
-											Contact us
-										</Button>
-									}
-									currency="USD"
-									description="For larger teams managing multiple projects."
-									features={[
-										"All previous",
-										"Unlimited contacts",
-										"Analytics platform",
-										"Public API access",
-										"Send and sign unlimited contracts",
-									]}
-									id="business"
-									name="Business"
-									price={29.99}
-								/>
+								{availablePlans(catalog || {}, true).map((pid) => {
+									const cap = PLAN_CAPABILITIES[pid];
+									const features = [
+										`${cap.monthlyQuota} monthly quota`,
+										`Retention: ${cap.retentionDays === "custom" ? "Custom" : cap.retentionDays + "d"}`,
+										cap.prioritySupport ? "Priority support" : "Community support",
+										cap.advancedAnalytics ? "Advanced analytics" : "Basic analytics",
+										cap.sso ? "SSO/SAML" : "—",
+									].filter(Boolean);
+									return (
+										<Grid key={pid} size={{ md: 3, xs: 12 }}>
+											<Plan
+												action={
+													<Button variant={pid === PlanId.PERSONAL || pid === PlanId.PRO ? "contained" : "outlined"}>
+														{pid === PlanId.BUSINESS ? "Contact us" : "Select"}
+													</Button>
+												}
+												currency="USD"
+												description={cap.name + " tier"}
+												features={features}
+												id={pid}
+												name={cap.name}
+												price={Number.parseFloat(displayPrice(pid))}
+											/>
+										</Grid>
+									);
+								})}
 							</Grid>
 						</Grid>
 					</div>

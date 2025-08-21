@@ -12,12 +12,27 @@ import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import { useTheme } from "@mui/material/styles";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import { Elements, PaymentElement, PaymentRequestButtonElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 
-// Types for catalog
-type CatalogEntry = { name: string; currency: string; price: number; price_id: string | null };
+import { PlanId } from "../../../../shared/types/plan";
+
+// Catalog supports new nested monthly/yearly price shape while remaining backward compatible.
+// Backend shape (new): { plan: { name, currency, monthly: { price, price_id }, yearly?: { price, price_id } } }
+// Legacy shape (fallback): { plan: { name, currency, price, price_id } }
+type CatalogEntry = {
+	name: string;
+	currency: string;
+	// legacy flat
+	price?: number;
+	price_id?: string | null;
+	// new nested
+	monthly?: { price: number; price_id: string | null };
+	yearly?: { price: number; price_id: string | null };
+};
 type Catalog = Record<string, CatalogEntry>;
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY as string);
@@ -28,9 +43,10 @@ export default function SubscribePage() {
 	const searchParams = useSearchParams();
 	const muiTheme = useTheme();
 	const [catalog, setCatalog] = useState<Catalog>({});
-	const [currentPlan, setCurrentPlan] = useState<string>("startup");
-	const [selected, setSelected] = useState<string>("standard");
+	const [currentPlan, setCurrentPlan] = useState<string>(PlanId.FREE);
+	const [selected, setSelected] = useState<string>(PlanId.PERSONAL);
 	const [clientSecret, setClientSecret] = useState<string | null>(null);
+	const [interval, setInterval] = useState<"monthly" | "yearly">("monthly");
 	const [loading, setLoading] = useState<boolean>(true);
 	const [isDark, setIsDark] = useState<boolean>(() => {
 		let classDark = false;
@@ -164,7 +180,13 @@ export default function SubscribePage() {
 
 	const initPayment = async () => {
 		const entry = catalog[selected];
-		if (!entry?.price_id) return;
+		if (!entry) return;
+		// Resolve price id based on selected interval with graceful fallback.
+		const priceId =
+			interval === "yearly"
+				? entry.yearly?.price_id || entry.monthly?.price_id || entry.price_id
+				: entry.monthly?.price_id || entry.price_id || entry.yearly?.price_id;
+		if (!priceId) return;
 		const jwt = await getToken();
 		const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 		const res = await fetch(`${API_URL}/billing/elements/init`, {
@@ -174,7 +196,7 @@ export default function SubscribePage() {
 				"Idempotency-Key": idempotency,
 				...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
 			},
-			body: JSON.stringify({ price_id: entry.price_id }),
+			body: JSON.stringify({ price_id: priceId, interval }),
 		});
 		if (!res.ok) throw new Error("Failed to initialize payment");
 		const data = await res.json();
@@ -202,18 +224,51 @@ export default function SubscribePage() {
 							<Stack spacing={2}>
 								<Stack spacing={1}>
 									<Typography variant="subtitle2">Choose a plan</Typography>
+									<Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+										<Typography variant="caption" color="text.secondary">
+											Billing interval
+										</Typography>
+										<ToggleButtonGroup
+											value={interval}
+											exclusive
+											onChange={(_, v) => v && setInterval(v)}
+											color="primary"
+											size="small"
+										>
+											<ToggleButton value="monthly">Monthly</ToggleButton>
+											<ToggleButton value="yearly" disabled={Object.values(catalog).every((c) => !c.yearly?.price_id)}>
+												Yearly
+											</ToggleButton>
+										</ToggleButtonGroup>
+									</Stack>
 									{Object.keys(catalog).length > 0 ? (
 										<Select value={selected} onChange={(e) => handlePlanChange(String(e.target.value))}>
-											{Object.entries(catalog).map(([key, v]) => (
-												<MenuItem key={key} value={key} disabled={!v.price_id}>
-													{v.name} —{" "}
-													{new Intl.NumberFormat("en-US", { style: "currency", currency: v.currency }).format(v.price)}{" "}
-													/ mo
-													{currentPlan && key.toLowerCase().includes(currentPlan.toString().toLowerCase())
-														? " (Current)"
-														: ""}
-												</MenuItem>
-											))}
+											{Object.entries(catalog).map(([key, v]) => {
+												// Determine availability
+												const monthly =
+													v.monthly || (v.price_id ? { price: v.price || 0, price_id: v.price_id } : null);
+												if (!monthly) return null; // skip plans without any purchasable price
+												const yearly = v.yearly;
+												const monthlyDisplay = monthly.price;
+												const effectivePerMonth =
+													interval === "yearly" && yearly?.price ? yearly.price / 12 : monthlyDisplay;
+												return (
+													<MenuItem
+														key={key}
+														value={key}
+														disabled={interval === "yearly" && !yearly?.price_id && !monthly?.price_id}
+													>
+														{v.name} —{" "}
+														{new Intl.NumberFormat("en-US", { style: "currency", currency: v.currency }).format(
+															effectivePerMonth
+														)}{" "}
+														/ mo
+														{currentPlan && key.toLowerCase().includes(currentPlan.toString().toLowerCase())
+															? " (Current)"
+															: ""}
+													</MenuItem>
+												);
+											})}
 										</Select>
 									) : (
 										<Typography color="text.secondary" variant="body2">
@@ -229,9 +284,19 @@ export default function SubscribePage() {
 										key={`elements-${isDark ? "dark" : "light"}-${clientSecret}`}
 									>
 										<ExpressCheckout
-											amountCents={Math.round((catalog[selected]?.price || 0) * 100)}
+											amountCents={(() => {
+												const entry = catalog[selected];
+												if (!entry) return 0;
+												const monthly =
+													entry.monthly ||
+													(entry.price_id ? { price: entry.price || 0, price_id: entry.price_id } : null);
+												const yearly = entry.yearly;
+												const perMonth =
+													interval === "yearly" && yearly?.price ? yearly.price / 12 : monthly?.price || 0;
+												return Math.round(perMonth * 100);
+											})()}
 											currency={(catalog[selected]?.currency || "USD").toLowerCase()}
-											label={`Numzy — ${catalog[selected]?.name || "Subscription"} (monthly)`}
+											label={`Numzy — ${catalog[selected]?.name || "Subscription"} (${interval})`}
 											isDark={isDark}
 										/>
 										<Typography
@@ -242,9 +307,21 @@ export default function SubscribePage() {
 											or pay with card
 										</Typography>
 										<CheckoutForm />
+										{/* Optional Address Element (enable when STRIPE_AUTOMATIC_TAX_ENABLED + Address collection desired) */}
+										{/* <AddressElement options={{ mode: 'billing' }} /> */}
 									</Elements>
 								) : (
-									<Button variant="contained" onClick={initPayment} disabled={!catalog[selected]?.price_id}>
+									<Button
+										variant="contained"
+										onClick={initPayment}
+										disabled={(() => {
+											const entry = catalog[selected];
+											if (!entry) return true;
+											if (interval === "yearly")
+												return !entry.yearly?.price_id && !entry.monthly?.price_id && !entry.price_id;
+											return !(entry.monthly?.price_id || entry.price_id || entry.yearly?.price_id);
+										})()}
+									>
 										Continue to payment
 									</Button>
 								)}

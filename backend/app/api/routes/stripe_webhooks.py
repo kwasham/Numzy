@@ -104,6 +104,10 @@ async def stripe_webhook(request: Request):
     # Handle a richer set of common events (no-op DB writes yet; structured logs only)
     event_type: str = event.get("type", "")
     data_object: Dict[str, Any] = event.get("data", {}).get("object", {})
+    try:
+        sentry_metric_inc("stripe.webhook.received", tags={"event_type": event_type})
+    except Exception:
+        pass
 
     # Optional backend-side allowlist to reduce noise even if Dashboard is broad
     try:
@@ -213,6 +217,13 @@ async def stripe_webhook(request: Request):
                 event_type, sub_id, status, customer, price_id, product_id, current_period_end, cancel_at, canceled_at,
             )
             sentry_metric_inc("stripe.subscription.event", tags={"event_type": event_type, "status": status or ""})
+            try:
+                sentry_set_tags({
+                    "stripe.subscription_status": status or "",
+                    "stripe.price_id": price_id or "",
+                })
+            except Exception:
+                pass
 
             # If subscription was deleted or set to canceled, downgrade user to FREE
             try:
@@ -311,17 +322,44 @@ async def stripe_webhook(request: Request):
                 invoice_id, customer, subscription, amount_paid, billing_reason,
             )
             sentry_metric_inc("stripe.invoice.paid")
+            try:
+                sentry_set_tags({
+                    "stripe.invoice_id": invoice_id or "",
+                    "stripe.price_id": price_id or "",
+                })
+            except Exception:
+                pass
 
         elif event_type in ("invoice.payment_failed",):
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
             subscription = data_object.get("subscription")
             attempt_count = data_object.get("attempt_count")
+            price_id = None
+            try:
+                lines = data_object.get("lines", {}).get("data", [])
+                if isinstance(lines, list) and lines:
+                    price_id = lines[0].get("price", {}).get("id")
+            except Exception:
+                price_id = None
             logger.warning(
                 "[stripe] invoice failed id=%s customer=%s subscription=%s attempts=%s",
                 invoice_id, customer, subscription, attempt_count,
             )
             sentry_metric_inc("stripe.invoice.failed")
+            try:
+                sentry_breadcrumb(
+                    category="stripe",
+                    message="invoice.payment_failed",
+                    level="warning",
+                    data={"invoice_id": invoice_id, "customer": customer, "subscription": subscription, "attempts": attempt_count, "price_id": price_id},
+                )
+                sentry_set_tags({
+                    "stripe.invoice_id": invoice_id or "",
+                    "stripe.price_id": price_id or "",
+                })
+            except Exception:
+                pass
             # Mark user as past_due (soft flag) to drive UI prompts
             try:
                 if customer:
@@ -338,11 +376,31 @@ async def stripe_webhook(request: Request):
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
             subscription = data_object.get("subscription")
+            price_id = None
+            try:
+                lines = data_object.get("lines", {}).get("data", [])
+                if isinstance(lines, list) and lines:
+                    price_id = lines[0].get("price", {}).get("id")
+            except Exception:
+                price_id = None
             logger.warning(
                 "[stripe] invoice requires action id=%s customer=%s subscription=%s",
                 invoice_id, customer, subscription,
             )
             sentry_metric_inc("stripe.invoice.action_required")
+            try:
+                sentry_breadcrumb(
+                    category="stripe",
+                    message="invoice.payment_action_required",
+                    level="warning",
+                    data={"invoice_id": invoice_id, "customer": customer, "subscription": subscription, "price_id": price_id},
+                )
+                sentry_set_tags({
+                    "stripe.invoice_id": invoice_id or "",
+                    "stripe.price_id": price_id or "",
+                })
+            except Exception:
+                pass
             # No DB change; client should be prompted to complete SCA. Status API can surface subscription.status
 
         elif event_type in ("customer.created", "customer.updated"):

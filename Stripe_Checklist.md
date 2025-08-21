@@ -47,6 +47,7 @@ Next quick wins
 - [ ] Subscribe only to necessary events in Dashboard (reduce noise):
   - `checkout.session.*`, `customer.subscription.*`, `invoice.*`, `customer.*`
   - Backend safety net added: `STRIPE_WEBHOOK_ALLOWED_EVENTS` allowlist filters non-matching events server‑side and emits `stripe.webhook.ignored` metric; we also emit `stripe.webhook.received` for overall intake visibility.
+  - Pruning script added: `backend/scripts/stripe_prune_webhooks.py` (dry-run by default, use --apply to modify Dashboard endpoint).
 
 Files to touch
 
@@ -106,6 +107,7 @@ Files to touch
 
 - [x] If enabling Stripe Tax: set `automatic_tax = { enabled: true }` on subscriptions.
 - [ ] Collect billing address (or use Elements Address) as needed for tax.
+  - Added DB fields & API endpoint (`POST /billing/address`) to persist + sync to Stripe; frontend Address Element still disabled.
   - Implemented behind feature flag: when `STRIPE_AUTOMATIC_TAX_ENABLED=true`, backend sends `automatic_tax: { enabled: true }` for both Checkout and Elements flows; tests cover both paths.
 
 Files to touch
@@ -246,6 +248,7 @@ Refs
 - [x] Idempotency on create calls
 - [x] Express Checkout wiring (Apple/Google enabling deferred to prod)
 - [ ] Address/Tax readiness
+  - Backend persistence + sync complete; enable Address Element & add validation + test.
 - [ ] Plans UI: hide tiers; yearly toggle
 - [x] Color-scheme meta
 - [x] Portal config verified (API supports configuration ID)

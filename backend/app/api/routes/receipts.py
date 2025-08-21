@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status,
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy import func
 from pydantic import BaseModel
 
 from app.api.dependencies import get_clerk_user, get_db_session, get_user, enforce_rate_limit, enforce_tiered_rate_limit
@@ -22,6 +23,7 @@ from app.models.enums import ReceiptStatus
 from app.models.schemas import ReceiptRead, ReceiptUpdate
 from app.models.tables import Receipt, BackgroundJob, User
 from app.services.billing_service import BillingService
+from app.core.observability import sentry_breadcrumb, sentry_set_tags
 from app.services.storage_service import StorageService, load_file_from_storage
 from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
@@ -40,6 +42,50 @@ async def upload_receipt(
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
     await enforce_tiered_rate_limit(user, "upload", cost=1)
+    # Monthly quota enforcement (simple count of receipts created this calendar month)
+    try:
+        billing = BillingService()
+        plan = getattr(user, "plan", None)
+        from app.models.enums import PlanType as _PT
+        if plan is None:
+            plan = _PT.FREE
+        # Determine month boundaries (UTC)
+        now = datetime.utcnow()
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        # Next month start for exclusive end
+        if now.month == 12:
+            next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+        else:
+            next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+        q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
+        result = await db.execute(q)
+        count = result.scalar() or 0
+        limit = billing.get_monthly_quota(plan)
+        if limit != float("inf") and count >= limit:
+            try:
+                sentry_breadcrumb(
+                    category="quota",
+                    message="upload_receipt.quota_denied",
+                    data={
+                        "plan": getattr(plan, "value", str(plan)),
+                        "monthly_limit": limit,
+                        "current_count": count,
+                        "route": "POST /receipts",
+                    },
+                    level="info",
+                )
+                sentry_set_tags({
+                    "quota.exceeded": True,
+                    "quota.plan": getattr(plan, "value", str(plan)),
+                })
+            except Exception:
+                pass
+            raise HTTPException(status_code=402, detail="Monthly quota exceeded for plan")
+    except HTTPException:
+        raise
+    except Exception:
+        # Fail open (never block processing) on internal errors
+        pass
     # Dev fallback: if bypass enabled and no Authorization header was sent, ensure we still have a user object.
     if settings.DEV_AUTH_BYPASS and (not request or not request.headers.get("Authorization")):
         # user is already a DB instance from get_user when bypass is True; nothing extra needed
@@ -111,6 +157,46 @@ async def upload_receipts_batch(
     created: List[ReceiptRead] = []
 
     for f in files:
+        # Quota check per file (stop early if exceeded)
+        try:
+            billing = BillingService()
+            plan = getattr(user, "plan", None)
+            from app.models.enums import PlanType as _PT
+            if plan is None:
+                plan = _PT.FREE
+            now = datetime.utcnow()
+            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+            if now.month == 12:
+                next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+            else:
+                next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+            q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
+            current_count = (await db.execute(q)).scalar() or 0
+            limit = billing.get_monthly_quota(plan)
+            if limit != float("inf") and current_count >= limit:
+                try:
+                    sentry_breadcrumb(
+                        category="quota",
+                        message="upload_receipts_batch.quota_denied",
+                        data={
+                            "plan": getattr(plan, "value", str(plan)),
+                            "monthly_limit": limit,
+                            "current_count": current_count,
+                            "route": "POST /receipts/batch",
+                        },
+                        level="info",
+                    )
+                    sentry_set_tags({
+                        "quota.exceeded": True,
+                        "quota.plan": getattr(plan, "value", str(plan)),
+                    })
+                except Exception:
+                    pass
+                raise HTTPException(status_code=402, detail="Monthly quota exceeded for plan")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
         # Validate content type
         if not f.content_type or not (f.content_type.startswith("image/") or f.content_type == "application/pdf"):
             raise HTTPException(status_code=400, detail=f"Invalid file type (only images or PDFs): {f.filename}")

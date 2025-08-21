@@ -113,6 +113,7 @@ async def create_checkout_session(
 @router.post("/elements/init")
 async def init_elements_subscription(
     price_id: str = Body(..., embed=True),
+    interval: str | None = Body(None, embed=True),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_user),
@@ -131,6 +132,8 @@ async def init_elements_subscription(
 
     if not price_id:
         raise HTTPException(status_code=400, detail="price_id is required")
+    if interval and interval not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="Invalid interval")
 
     # Ensure Stripe customer exists for user
     customer_id = getattr(user, "stripe_customer_id", None)
@@ -188,9 +191,14 @@ async def init_elements_subscription(
                 "price_id": price_id,
                 "customer_id": customer_id,
                 "subscription_id": sub.get("id"),
+                **({"interval": interval} if interval else {}),
             },
         )
-        sentry_metric_inc("stripe.subscription.created_default_incomplete", tags={"price_id": price_id})
+        sentry_metric_inc(
+            "stripe.subscription.created_default_incomplete",
+            tags={"price_id": price_id, **({"interval": interval} if interval else {})},
+        )
+        sentry_set_tags({"checkout.interval": interval or "monthly"})
     except Exception:
         pass
 
@@ -368,9 +376,10 @@ async def get_billing_status(
     if isinstance(plan_value, PlanType):
         plan_value = plan_value.value
 
-    # Build a lightweight catalog of plans with current Stripe prices (prefer lookup keys)
+    # Build a catalog of plans with monthly (& yearly when available) prices.
+    # Shape: { planId: { name, currency, monthly: { price, price_id }, yearly?: { price, price_id } } }
     catalog = {
-        "free": {"name": "Free", "currency": "USD", "price": 0, "price_id": None},
+        "free": {"name": "Free", "currency": "USD", "monthly": {"price": 0, "price_id": None}},
     }
     try:
         def _resolve_price_by_lookup(lookup_key: str | None) -> dict | None:
@@ -383,41 +392,45 @@ async def get_billing_status(
             except Exception:
                 return None
 
-        personal_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PERSONAL_MONTHLY", None))
-        if personal_price:
-            unit = personal_price.get("unit_amount") or 0
-            currency = (personal_price.get("currency") or "usd").upper()
+        personal_monthly = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PERSONAL_MONTHLY", None))
+        if personal_monthly:
+            unit = personal_monthly.get("unit_amount") or 0
+            currency = (personal_monthly.get("currency") or "usd").upper()
             catalog["personal"] = {
                 "name": "Personal",
                 "currency": currency,
-                "price": float(unit) / 100.0,
-                "price_id": personal_price.get("id"),
+                "monthly": {"price": float(unit) / 100.0, "price_id": personal_monthly.get("id")},
             }
 
-        pro_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PRO_MONTHLY", None)) or (
+        pro_monthly = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PRO_MONTHLY", None)) or (
             stripe.Price.retrieve(settings.STRIPE_PRICE_PRO_MONTHLY) if settings.STRIPE_PRICE_PRO_MONTHLY else None  # type: ignore
         )
-        if pro_price:
-            unit = pro_price.get("unit_amount") or 0
-            currency = (pro_price.get("currency") or "usd").upper()
+        pro_yearly = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_PRO_YEARLY", None)) or (
+            stripe.Price.retrieve(settings.STRIPE_PRICE_PRO_YEARLY) if settings.STRIPE_PRICE_PRO_YEARLY else None  # type: ignore
+        )
+        if pro_monthly:
+            unit = pro_monthly.get("unit_amount") or 0
+            currency = (pro_monthly.get("currency") or "usd").upper()
             catalog["pro"] = {
                 "name": "Pro",
                 "currency": currency,
-                "price": float(unit) / 100.0,
-                "price_id": pro_price.get("id"),
+                "monthly": {"price": float(unit) / 100.0, "price_id": pro_monthly.get("id")},
             }
+            if pro_yearly and (pro_yearly.get("currency") or "usd").upper() == currency:
+                y_unit = pro_yearly.get("unit_amount") or 0
+                catalog["pro"]["yearly"] = {"price": float(y_unit) / 100.0, "price_id": pro_yearly.get("id")}
 
-        business_price = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_BUSINESS_MONTHLY", None)) or (
-            stripe.Price.retrieve(settings.STRIPE_PRICE_TEAM_MONTHLY) if settings.STRIPE_PRICE_TEAM_MONTHLY else None  # type: ignore
+        business_monthly = _resolve_price_by_lookup(getattr(settings, "STRIPE_LOOKUP_BUSINESS_MONTHLY", None)) or (
+            stripe.Price.retrieve(settings.STRIPE_PRICE_BUSINESS_MONTHLY) if settings.STRIPE_PRICE_BUSINESS_MONTHLY else None  # type: ignore
         )
-        if business_price:
-            unit = business_price.get("unit_amount") or 0
-            currency = (business_price.get("currency") or "usd").upper()
+        # (Optional) yearly business lookup variables could be added in config later
+        if business_monthly:
+            unit = business_monthly.get("unit_amount") or 0
+            currency = (business_monthly.get("currency") or "usd").upper()
             catalog["business"] = {
                 "name": "Business",
                 "currency": currency,
-                "price": float(unit) / 100.0,
-                "price_id": business_price.get("id"),
+                "monthly": {"price": float(unit) / 100.0, "price_id": business_monthly.get("id")},
             }
     except Exception as e:  # pragma: no cover
         logger.warning("Failed to build plan catalog from Stripe: %s", e)
@@ -606,3 +619,97 @@ async def update_subscription_payment_method(
     except Exception as e:  # pragma: no cover
         logger.exception("Failed to update subscription payment method: %s", e)
         raise HTTPException(status_code=500, detail="Unable to update payment method")
+
+@router.post("/address")
+async def update_billing_address(
+    line1: str = Body(..., embed=True),
+    city: str | None = Body(None, embed=True),
+    state: str | None = Body(None, embed=True),
+    postal_code: str | None = Body(None, embed=True),
+    country: str | None = Body(None, embed=True),
+    line2: str | None = Body(None, embed=True),
+    user: User = Depends(get_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist user billing address locally and (best‑effort) sync to Stripe Customer.
+
+    Returns stored address. Minimal validation; rely on Stripe for deeper checks.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    # Persist to DB
+    user.billing_address_line1 = line1
+    user.billing_address_line2 = line2
+    user.billing_address_city = city
+    user.billing_address_state = state
+    user.billing_address_postal_code = postal_code
+    user.billing_address_country = country
+    try:
+        await db.commit()
+    except Exception as e:  # pragma: no cover
+        await db.rollback()
+        logger.exception("Failed to persist billing address: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to save address")
+
+    # Ensure Stripe customer exists (best effort)
+    customer_id = getattr(user, "stripe_customer_id", None)
+    if not customer_id:
+        try:
+            found = stripe.Customer.list(email=user.email, limit=1)  # type: ignore
+            data = found.get("data", []) if isinstance(found, dict) else []
+            if data:
+                customer_id = data[0]["id"]
+                user.stripe_customer_id = customer_id
+                await db.commit()
+            else:
+                cust = stripe.Customer.create(email=user.email)  # type: ignore
+                customer_id = cust["id"]
+                user.stripe_customer_id = customer_id
+                await db.commit()
+        except Exception:  # pragma: no cover
+            customer_id = None
+
+    # Sync to Stripe (best effort; ignore failures so UX remains smooth)
+    if customer_id:
+        try:
+            stripe.Customer.modify(  # type: ignore
+                customer_id,
+                address={
+                    "line1": line1,
+                    **({"line2": line2} if line2 else {}),
+                    **({"city": city} if city else {}),
+                    **({"state": state} if state else {}),
+                    **({"postal_code": postal_code} if postal_code else {}),
+                    **({"country": country} if country else {}),
+                },
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning("Stripe customer address update failed for %s: %s", customer_id, e)
+
+    # Observability (non‑PII)
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="customer.address.updated",
+            data={"customer_id": customer_id, "country": country},
+        )
+        sentry_metric_inc("stripe.customer.address.updated", tags={"country": country or "unknown"})
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "address": {
+            "line1": line1,
+            "line2": line2,
+            "city": city,
+            "state": state,
+            "postal_code": postal_code,
+            "country": country,
+        },
+        "stripe_customer_id": customer_id,
+    }

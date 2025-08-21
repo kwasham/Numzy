@@ -1,4 +1,3 @@
-import * as React from "react";
 import Box from "@mui/material/Box";
 import Container from "@mui/material/Container";
 import Grid from "@mui/material/Grid";
@@ -34,9 +33,9 @@ const faqs = [
 	},
 	{
 		id: "FAQ-1",
-		question: "For what kind of projects is the Standard license intended?",
+		question: "Who is the Personal plan for?",
 		answer:
-			"The Standard license is designed for internal applications in which staff will access the application. An example could be the back-office dashboard of a public-facing e-commerce website in which staff would sign in and manage inventory, customers, etc.",
+			"The Personal plan targets individual users who need higher limits than Free without team collaboration overhead. It’s ideal for freelancers validating workflows before scaling to Pro (team) or Business (enterprise) tiers.",
 	},
 ];
 

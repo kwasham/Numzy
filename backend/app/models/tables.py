@@ -47,6 +47,13 @@ class User(Base):
     stripe_customer_id = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
     plan = Column(Enum(PlanType), nullable=False, default=PlanType.FREE)
+    # Billing address fields (optional, for tax readiness). Stored without PII beyond city/country/line/zip.
+    billing_address_line1 = Column(String, nullable=True)
+    billing_address_line2 = Column(String, nullable=True)
+    billing_address_city = Column(String, nullable=True)
+    billing_address_state = Column(String, nullable=True)
+    billing_address_postal_code = Column(String, nullable=True)
+    billing_address_country = Column(String, nullable=True)
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
 
