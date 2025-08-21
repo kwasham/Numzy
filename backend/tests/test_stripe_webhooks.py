@@ -133,3 +133,41 @@ def test_webhook_rejects_when_all_secrets_invalid(monkeypatch, app_client):
         headers={"stripe-signature": "stub"},
     )
     assert resp.status_code in (400, 401)
+
+
+def test_webhook_allowlist_filters_unlisted_event(monkeypatch, app_client):
+    """When STRIPE_WEBHOOK_ALLOWED_EVENTS excludes an event, it should be filtered early."""
+    from app.core import config as cfg
+    import app.api.routes.stripe_webhooks as wh
+    import types
+
+    # Allow only invoice.* events
+    monkeypatch.setattr(cfg.settings, "STRIPE_WEBHOOK_ALLOWED_EVENTS", "invoice.*", raising=False)
+
+    # Capture enqueue calls
+    calls: list[dict] = []
+    monkeypatch.setattr(wh, "process_stripe_event", types.SimpleNamespace(send=lambda evt: calls.append(evt)))
+
+    # Send an event that is NOT allowed (checkout.session.completed)
+    filtered_evt = _fake_event("checkout.session.completed", {"id": "cs_f_1"}, event_id="evt_filter_1")
+    resp = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(filtered_evt).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("filtered") is True
+    assert body.get("queued") is None
+    assert calls == []  # ensure we did not enqueue
+
+    # Send an allowed event (invoice.payment_failed) and ensure it queues
+    allowed_evt = _fake_event("invoice.payment_failed", {"id": "in_allow_1"}, event_id="evt_allow_1")
+    resp2 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(allowed_evt).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json().get("queued") is True
+    assert len(calls) == 1
