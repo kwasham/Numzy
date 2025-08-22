@@ -60,3 +60,4 @@ frontend/public/mockups/
 # Sentry build artifacts (if generated locally)
 .sentry-cli*
 
+frontend/app
