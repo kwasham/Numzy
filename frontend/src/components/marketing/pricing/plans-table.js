@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Container from "@mui/material/Container";
 import Grid from "@mui/material/Grid";
@@ -15,6 +14,7 @@ import { PLAN_FEATURES, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta } from "
 
 export function PlansTable() {
 	const [yearly, setYearly] = React.useState(false);
+	const [selectedPlan, setSelectedPlan] = React.useState(null);
 	// Monthly vs. yearly (displayed as discounted monthly equivalent) pricing
 	const periodLabel = yearly ? "/year" : "/month";
 	const ids = PLAN_ORDER;
@@ -107,35 +107,9 @@ export function PlansTable() {
 								const discountPercent = isYear ? meta.discountPercent : undefined;
 								const { name, description, recommended } = PLAN_METADATA[id];
 								const featureEntries = featureDeltaMap[id];
-								const actionButton =
-									id === "business" ? (
-										<Button
-											color="secondary"
-											variant="contained"
-											onClick={() => {
-												// analytics placeholder
-												globalThis?.dispatchEvent(new CustomEvent("pricing:contact", { detail: { plan: id } }));
-												globalThis.location.href = "mailto:sales@example.com?subject=Business%20Plan%20Inquiry";
-											}}
-										>
-											Contact us
-										</Button>
-									) : (
-										<Button
-											variant={id === "personal" || id === "pro" ? "contained" : "outlined"}
-											onClick={() => {
-												globalThis?.dispatchEvent(
-													new CustomEvent("pricing:select", { detail: { plan: id, yearly: isYear } })
-												);
-											}}
-										>
-											Select
-										</Button>
-									);
 								return (
 									<Grid size={{ xs: 12, sm: 6, md: 3 }} key={id} data-pricing-card="true" data-plan={id}>
 										<Plan
-											action={actionButton}
 											currency="USD"
 											description={description}
 											features={featureEntries.map((f) => (f.isNew ? `${f.name} *` : f.name))}
@@ -146,6 +120,8 @@ export function PlansTable() {
 											monthlyReference={monthlyRef}
 											discountPercent={discountPercent}
 											recommended={recommended}
+											selected={selectedPlan === id}
+											onSelect={(planId) => setSelectedPlan(planId)}
 										/>
 									</Grid>
 								);
