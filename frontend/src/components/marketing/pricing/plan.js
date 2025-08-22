@@ -1,13 +1,50 @@
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
+import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { CheckIcon } from "@phosphor-icons/react/dist/ssr/Check";
 
-export function Plan({ action, currency, description, id, features, name, price }) {
+import { FEATURE_DETAILS } from "./pricing-config";
+
+export function Plan({
+	action,
+	currency,
+	description,
+	id,
+	features,
+	name,
+	price,
+	period = "/month",
+	monthlyReference,
+	discountPercent,
+	recommended = false,
+}) {
 	return (
-		<Card sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
+		<Card
+			sx={{
+				display: "flex",
+				flexDirection: "column",
+				height: "100%",
+				position: "relative",
+				borderWidth: recommended ? 2 : 1,
+				borderStyle: "solid",
+				borderColor: recommended ? "primary.main" : "divider",
+				boxShadow: recommended ? 6 : undefined,
+				transition: "box-shadow 0.2s, transform 0.2s",
+				"&:hover": { boxShadow: 8, transform: "translateY(-2px)" },
+			}}
+		>
+			{recommended && (
+				<Chip
+					color="primary"
+					size="small"
+					label="Recommended"
+					sx={{ position: "absolute", top: 8, right: 8, fontWeight: 600 }}
+				/>
+			)}
 			<Stack spacing={2} sx={{ p: 3 }}>
 				<div>
 					<Box sx={{ height: "52px", width: "52px" }}>
@@ -23,9 +60,18 @@ export function Plan({ action, currency, description, id, features, name, price 
 						}).format(price)}
 					</Typography>
 					<Typography color="text.secondary" variant="subtitle2">
-						/month
+						{period}
 					</Typography>
 				</Box>
+				{period === "/year" && monthlyReference != null && (
+					<Typography color="text.secondary" variant="caption">
+						≈{" "}
+						{new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(
+							monthlyReference
+						)}{" "}
+						/ month{discountPercent ? ` (Save ${discountPercent}%)` : ""}
+					</Typography>
+				)}
 				<Typography variant="h6">{name}</Typography>
 				<Typography color="text.secondary" variant="body2">
 					{description}
@@ -35,12 +81,14 @@ export function Plan({ action, currency, description, id, features, name, price 
 			<Stack spacing={6} sx={{ display: "flex", flex: "1 1 auto", p: 3 }}>
 				<Stack spacing={2} sx={{ flex: "1 1 auto" }}>
 					{features.map((feature) => (
-						<Stack direction="row" key={feature} spacing={1} sx={{ alignItems: "center", display: "flex" }}>
-							<Box sx={{ display: "flex" }}>
-								<CheckIcon color="var(--mui-palette-success-main)" fontSize="var(--icon-fontSize-md)" />
-							</Box>
-							<Typography variant="subtitle2">{feature}</Typography>
-						</Stack>
+						<Tooltip key={feature} title={FEATURE_DETAILS[feature] || ""} placement="top" arrow disableInteractive>
+							<Stack direction="row" spacing={1} sx={{ alignItems: "center", display: "flex" }}>
+								<Box sx={{ display: "flex" }}>
+									<CheckIcon color="var(--mui-palette-success-main)" fontSize="var(--icon-fontSize-md)" />
+								</Box>
+								<Typography variant="subtitle2">{feature}</Typography>
+							</Stack>
+						</Tooltip>
 					))}
 				</Stack>
 				{action}
