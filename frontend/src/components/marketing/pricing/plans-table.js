@@ -15,6 +15,18 @@ import { PLAN_FEATURES, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta } from "
 export function PlansTable() {
 	const [yearly, setYearly] = React.useState(false);
 	const [selectedPlan, setSelectedPlan] = React.useState(null);
+
+	// restore persisted selection
+	React.useEffect(() => {
+		try {
+			const stored = globalThis?.localStorage?.getItem("pricing:selectedPlan");
+			if (stored && PLAN_ORDER.includes(stored)) {
+				setSelectedPlan(stored);
+			}
+		} catch {
+			/* ignore */
+		}
+	}, []);
 	// Monthly vs. yearly (displayed as discounted monthly equivalent) pricing
 	const periodLabel = yearly ? "/year" : "/month";
 	const ids = PLAN_ORDER;
@@ -121,7 +133,14 @@ export function PlansTable() {
 											discountPercent={discountPercent}
 											recommended={recommended}
 											selected={selectedPlan === id}
-											onSelect={(planId) => setSelectedPlan(planId)}
+											onSelect={(planId) => {
+												setSelectedPlan(planId);
+												try {
+													globalThis?.localStorage?.setItem("pricing:selectedPlan", planId);
+												} catch {
+													/* ignore */
+												}
+											}}
 										/>
 									</Grid>
 								);

@@ -380,6 +380,23 @@ export function Plan({
 					boxShadow: 10,
 				}),
 			}}
+			role="group"
+			tabIndex={0}
+			aria-label={`${name} plan${selected ? " selected" : ""}`}
+			onKeyDown={(e) => {
+				if ((e.key === "Enter" || e.key === " ") && !selected && id !== "business") {
+					e.preventDefault();
+					onSelect?.(id);
+					globalThis?.dispatchEvent(
+						new CustomEvent("pricing:select", { detail: { plan: id, yearly: period === "/year" } })
+					);
+				}
+				if ((e.key === "Enter" || e.key === " ") && id === "business") {
+					e.preventDefault();
+					globalThis?.dispatchEvent(new CustomEvent("pricing:contact", { detail: { plan: id } }));
+					globalThis.location.href = "mailto:sales@example.com?subject=Business%20Plan%20Inquiry";
+				}
+			}}
 		>
 			{/* Accent bar */}
 			<Box
