@@ -1,15 +1,10 @@
-import * as React from "react";
-import { Auth0Provider } from "@auth0/nextjs-auth0";
 import InitColorSchemeScript from "@mui/material/InitColorSchemeScript";
 
 import "@/styles/global.css";
 
 import { appConfig } from "@/config/app";
-import { AuthStrategy } from "@/lib/auth-strategy";
 import { getSettings as getPersistedSettings } from "@/lib/settings";
-import { AuthProvider as CognitoProvider } from "@/components/auth/cognito/auth-context";
-import { AuthProvider as CustomAuthProvider } from "@/components/auth/custom/auth-context";
-import { AuthProvider as SupabaseProvider } from "@/components/auth/supabase/auth-context";
+import { UnifiedAuthProvider } from "@/components/auth/unified-auth-provider";
 import { Analytics } from "@/components/core/analytics";
 import { EmotionCacheProvider } from "@/components/core/emotion-cache";
 import { I18nProvider } from "@/components/core/i18n-provider";
@@ -33,40 +28,13 @@ export default async function Layout({ children }) {
 	const direction = settings.direction ?? appConfig.direction;
 	const language = settings.language ?? appConfig.language;
 
-	// Select auth provider lazily to avoid importing heavy server modules when not needed
-	let AuthProvider = React.Fragment;
-	switch (appConfig.authStrategy) {
-		case AuthStrategy.AUTH0: {
-			AuthProvider = Auth0Provider;
-			break;
-		}
-		case AuthStrategy.CLERK: {
-			const { ClerkProvider } = await import("@clerk/nextjs");
-			AuthProvider = ClerkProvider;
-			break;
-		}
-		case AuthStrategy.COGNITO: {
-			AuthProvider = CognitoProvider;
-			break;
-		}
-		case AuthStrategy.CUSTOM: {
-			AuthProvider = CustomAuthProvider;
-			break;
-		}
-		case AuthStrategy.SUPABASE: {
-			AuthProvider = SupabaseProvider;
-			break;
-		}
-		default: {
-			break;
-		}
-	}
+	// Auth provider selection moved to client component for proper Clerk script loading.
 
 	return (
 		<html dir={direction} lang={language} suppressHydrationWarning>
 			<body>
 				<InitColorSchemeScript attribute="class" />
-				<AuthProvider>
+				<UnifiedAuthProvider>
 					<Analytics>
 						<LocalizationProvider>
 							<SettingsProvider settings={settings}>
@@ -84,7 +52,7 @@ export default async function Layout({ children }) {
 							</SettingsProvider>
 						</LocalizationProvider>
 					</Analytics>
-				</AuthProvider>
+				</UnifiedAuthProvider>
 			</body>
 		</html>
 	);

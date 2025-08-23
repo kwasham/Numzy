@@ -89,13 +89,23 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 			let token: string | null = null;
 			try {
 				token = await getToken?.();
-			} catch {
-				/* ignore */
+			} catch (error) {
+				console.warn("[receipts] getToken failed", error);
 			}
+			const hasAuth = Boolean(token);
 			const res = await fetch(`${API_URL}/receipts`, {
-				headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+				headers: hasAuth ? { Authorization: `Bearer ${token}` } : undefined,
 			});
-			if (!res.ok) throw new Error(`Failed (${res.status})`);
+			if (!res.ok) {
+				if (res.status === 401 || res.status === 403) {
+					toast.error("Not authorized – sign in required");
+					console.error(`[receipts] auth failure status=${res.status} hasAuthHeader=${hasAuth}`);
+				} else {
+					toast.error(`Failed to load receipts (${res.status})`);
+				}
+				setReceipts([]);
+				return;
+			}
 			const data: Receipt[] = await res.json();
 
 			const hasCategoryOrSub = (arr: Receipt[]) =>

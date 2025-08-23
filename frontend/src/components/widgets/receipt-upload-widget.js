@@ -14,19 +14,33 @@ import { Previewer } from "@/components/widgets/previewer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function uploadOne(file, token) {
+async function uploadOne(file, token, attempt = 1) {
 	const form = new FormData();
 	form.append("file", file);
 	const headers = {};
-	if (token) {
-		headers["Authorization"] = `Bearer ${token}`;
+	if (token) headers["Authorization"] = `Bearer ${token}`;
+	try {
+		const res = await fetch(`${API_URL}/receipts`, { method: "POST", body: form, headers });
+		if (!res.ok) {
+			const text = await res.text().catch(() => "");
+			throw new Error(text || `Upload failed (${res.status})`);
+		}
+		return res.json();
+	} catch (error) {
+		// Network / CORS / mixed-content errors surface as TypeError in browsers
+		if (attempt === 1 && error instanceof TypeError) {
+			console.warn("[upload] network error, retrying once", error);
+			await new Promise((r) => setTimeout(r, 300));
+			return uploadOne(file, token, attempt + 1);
+		}
+		if (error instanceof TypeError) {
+			throw new TypeError(
+				"Network error (CORS / mixed content / server down). Verify API reachable at " +
+					`${API_URL} and CORS allows this origin.`
+			);
+		}
+		throw error;
 	}
-	const res = await fetch(`${API_URL}/receipts`, { method: "POST", body: form, headers });
-	if (!res.ok) {
-		const text = await res.text().catch(() => "");
-		throw new Error(text || `Upload failed (${res.status})`);
-	}
-	return res.json();
 }
 
 export function ReceiptUploadWidget() {
@@ -70,7 +84,7 @@ export function ReceiptUploadWidget() {
 			clearAll();
 			console.log("Upload result", data);
 		} catch (error) {
-			console.error(error);
+			console.error("[upload] final error", error);
 			toast.error(error.message || "Upload failed");
 		} finally {
 			setUploading(false);

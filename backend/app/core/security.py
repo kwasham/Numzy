@@ -129,14 +129,25 @@ async def get_current_user(
     if not clerk_user_id:
         raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
 
-    # Fetch Clerk user info
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{CLERK_API_URL}/users/{clerk_user_id}", headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"})
+    if not CLERK_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Clerk secret key not configured")
+
+    # Mandatory Clerk API lookup
+    async with httpx.AsyncClient(timeout=5) as client:
+        resp = await client.get(
+            f"{CLERK_API_URL}/users/{clerk_user_id}",
+            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+        )
         if resp.status_code != 200:
             raise HTTPException(status_code=401, detail="Clerk user not found")
         clerk_user = resp.json()
-    email = clerk_user.get("email_addresses", [{}])[0].get("email_address") or clerk_user.get("email_address")
-    name = clerk_user.get("first_name", "") + " " + clerk_user.get("last_name", "")
+    email = (
+        clerk_user.get("email_addresses", [{}])[0].get("email_address")
+        or clerk_user.get("email_address")
+    )
+    first = clerk_user.get("first_name", "")
+    last = clerk_user.get("last_name", "")
+    name = f"{first} {last}".strip() or email
     if not email:
         raise HTTPException(status_code=400, detail="Clerk user missing email")
 
@@ -154,7 +165,7 @@ async def get_current_user(
             await db.commit()
             await db.refresh(user)
         return user
-    new_user = User(email=email, name=name.strip() or email, plan=PlanType.PRO, clerk_id=clerk_user_id)
+    new_user = User(email=email, name=name, plan=PlanType.PRO, clerk_id=clerk_user_id)
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)

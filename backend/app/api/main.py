@@ -10,7 +10,7 @@ from __future__ import annotations
 
 
 
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.security import HTTPBearer
 from app.core.config import settings
 from app.core.observability import init_sentry
@@ -30,6 +30,7 @@ from app.api.routes.billing import router as billing_router
 from fastapi.exception_handlers import RequestValidationError
 from app.api.error_handlers import validation_exception_handler, generic_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 import os
 
@@ -62,6 +63,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 # Middleware to enrich Sentry scope with lightweight request + user info
 @app.middleware("http")
 async def sentry_context_middleware(request: Request, call_next):  # type: ignore
@@ -76,10 +78,36 @@ async def sentry_context_middleware(request: Request, call_next):  # type: ignor
     response = await call_next(request)
     return response
 
-# Configure CORS - use settings and be permissive in development
-allow_origins = settings.BACKEND_CORS_ORIGINS
-if (settings.ENVIRONMENT or "development").lower() == "development":
-    allow_origins = ["*"]
+"""CORS configuration.
+
+Logic:
+1. In development => allow all ( * ) for simplest DX.
+2. Otherwise start from BACKEND_CORS_ORIGINS.
+3. Ensure the FRONTEND_BASE_URL origin is present (parsed) when not wildcard.
+4. Deduplicate while preserving order.
+"""
+env_is_dev = (settings.ENVIRONMENT or "development").lower() == "development"
+allow_origins = ["*"] if env_is_dev else list(settings.BACKEND_CORS_ORIGINS or [])
+
+if not env_is_dev:
+    try:
+        parsed = urlparse(getattr(settings, "FRONTEND_BASE_URL", ""))
+        if parsed.scheme and parsed.netloc:
+            front_origin = f"{parsed.scheme}://{parsed.netloc}"
+            if "*" not in allow_origins and front_origin not in allow_origins:
+                allow_origins.append(front_origin)
+    except Exception:
+        pass
+
+# Always ensure common localhost dev origins present unless wildcard already used
+if "*" not in allow_origins:
+    for dev_origin in ["http://localhost:3000", "http://127.0.0.1:3000"]:
+        if dev_origin not in allow_origins:
+            allow_origins.append(dev_origin)
+
+# Deduplicate preserving order
+seen = set()
+allow_origins = [o for o in allow_origins if not (o in seen or seen.add(o))]
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,6 +134,11 @@ app.include_router(events_router)
 app.include_router(stripe_webhooks_router)
 app.include_router(billing_router)
 
+# Quietly absorb Chrome devtools /.well-known probe (prevents 404 log noise)
+@app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+async def chrome_devtools_probe():  # pragma: no cover - minimal utility endpoint
+    return {}
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -117,9 +150,9 @@ def auth_test(credentials=Depends(HTTPBearer())):
     return {"message": "You are authorized"}
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint (supports GET & HEAD)."""
     return {"status": "healthy"}
 
 
