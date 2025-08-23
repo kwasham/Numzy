@@ -171,3 +171,74 @@ def test_webhook_allowlist_filters_unlisted_event(monkeypatch, app_client):
     assert resp2.status_code == 200
     assert resp2.json().get("queued") is True
     assert len(calls) == 1
+
+
+def test_webhook_allowlist_multiple_patterns(monkeypatch, app_client):
+    """Support a comma-separated pattern set; only matching events enqueue."""
+    from app.core import config as cfg
+    import app.api.routes.stripe_webhooks as wh
+    import types
+
+    # Allow only checkout.session.* and invoice.payment_failed
+    monkeypatch.setattr(cfg.settings, "STRIPE_WEBHOOK_ALLOWED_EVENTS", "checkout.session.* , invoice.payment_failed", raising=False)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(wh, "process_stripe_event", types.SimpleNamespace(send=lambda evt: calls.append(evt)))
+
+    # Allowed (checkout.session.completed)
+    evt_allowed = _fake_event("checkout.session.completed", {"id": "cs_multi_1"}, event_id="evt_multi_1")
+    r1 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(evt_allowed).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert r1.status_code == 200 and r1.json().get("queued") is True
+
+    # Disallowed (customer.subscription.updated)
+    evt_blocked = _fake_event("customer.subscription.updated", {"id": "sub_multi_1"}, event_id="evt_multi_2")
+    r2 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(evt_blocked).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert r2.status_code == 200 and r2.json().get("filtered") is True
+
+    # Allowed second pattern (invoice.payment_failed)
+    evt_failed = _fake_event("invoice.payment_failed", {"id": "in_multi_1"}, event_id="evt_multi_3")
+    r3 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(evt_failed).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert r3.status_code == 200 and r3.json().get("queued") is True
+    assert len(calls) == 2  # checkout + failed
+
+
+def test_invoice_paid_and_payment_succeeded_events(monkeypatch, app_client):
+    """Ensure both invoice.paid and invoice.payment_succeeded enqueue when allowed explicitly."""
+    from app.core import config as cfg
+    import app.api.routes.stripe_webhooks as wh
+    import types
+
+    monkeypatch.setattr(cfg.settings, "STRIPE_WEBHOOK_ALLOWED_EVENTS", "invoice.paid,invoice.payment_succeeded", raising=False)
+    captured: list[dict] = []
+    monkeypatch.setattr(wh, "process_stripe_event", types.SimpleNamespace(send=lambda evt: captured.append(evt)))
+
+    paid_evt = _fake_event("invoice.paid", {"id": "in_paid_1"}, event_id="evt_paid_1")
+    succ_evt = _fake_event("invoice.payment_succeeded", {"id": "in_succ_1"}, event_id="evt_succ_1")
+
+    r1 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(paid_evt).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    r2 = app_client.post(
+        "/webhooks/stripe",
+        data=json.dumps(succ_evt).encode("utf-8"),
+        headers={"stripe-signature": "stub"},
+    )
+    assert r1.status_code == 200 and r1.json().get("queued") is True
+    assert r2.status_code == 200 and r2.json().get("queued") is True
+    # Both events captured
+    types_set = {e.get("type") for e in captured}
+    assert {"invoice.paid", "invoice.payment_succeeded"} <= types_set
