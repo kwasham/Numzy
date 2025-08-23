@@ -81,7 +81,8 @@ def session_patch(monkeypatch):
 
 
 def test_reconciliation_applies_and_clears_metadata(monkeypatch):
-    reconcile_pending_subscription_downgrades.send(lookahead_seconds=600, batch_limit=10)
+    # Call directly so logic executes synchronously in test process
+    reconcile_pending_subscription_downgrades(lookahead_seconds=600, batch_limit=10)
     from app.core.tasks import stripe as stripe_mod  # type: ignore
     args = stripe_mod.Subscription.last_modify
     assert args.get("cancel_at_period_end") is False
