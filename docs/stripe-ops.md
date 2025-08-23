@@ -44,6 +44,17 @@ Flags:
 - `--audit-json` writes the before/target snapshot for change review / PR artifact.
 - Omit `--apply` for dry-run safety.
 
+Environment allowlist example (add to production secret store / .env):
+
+```bash
+STRIPE_WEBHOOK_ALLOWED_EVENTS=checkout.session.completed,customer.subscription.*,invoice.payment_succeeded,invoice.paid,invoice.payment_failed,invoice.payment_action_required,customer.updated
+```
+
+Notes:
+
+- Including both invoice.paid and invoice.payment_succeeded ensures compatibility across API versions.
+- Wildcard for customer.subscription.\* covers created/updated/deleted without enumerating.
+
 Safety net on backend:
 
 - We enforce an allowlist via STRIPE_WEBHOOK_ALLOWED_EVENTS. Non‑matching events return 2xx and increment metric `stripe.webhook.ignored`.
