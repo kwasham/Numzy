@@ -50,6 +50,7 @@ def main():
     parser.add_argument('--apply', action='store_true', help='Apply changes (otherwise dry-run)')
     parser.add_argument('--print-diff', action='store_true', help='Print a machine-readable JSON diff summary')
     parser.add_argument('--audit-json', help='Write full before/after JSON snapshot to file (dry-run safe)')
+    parser.add_argument('--simulate-events', help='Path to JSON list of observed event types to diff (dry-run aid)')
     args = parser.parse_args()
 
     api_key = os.getenv('STRIPE_API_KEY')
@@ -85,6 +86,26 @@ def main():
             'apply': bool(args.apply),
         }
         print('DIFF_JSON:', _json.dumps(diff_obj, separators=(',', ':')))
+
+    if args.simulate_events:
+        import json as _json
+        try:
+            with open(args.simulate_events) as f:
+                observed = set(_json.load(f))
+            missing_but_observed = sorted(observed - allowed)
+            allowed_unused = sorted(allowed - observed)
+            print('Simulation observed events:', sorted(observed))
+            print('Observed NOT in allowlist (would be filtered):', missing_but_observed)
+            print('Allowlist events not yet observed (ensure needed):', allowed_unused)
+            if args.print_diff:
+                sim = {
+                    'observed': sorted(observed),
+                    'observed_not_allowed': missing_but_observed,
+                    'allowed_not_observed': allowed_unused,
+                }
+                print('SIM_JSON:', _json.dumps(sim, separators=(',', ':')))
+        except Exception as e:  # pragma: no cover
+            print('Failed simulation load:', e, file=sys.stderr)
 
     if args.audit_json:
         try:

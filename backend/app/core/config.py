@@ -56,28 +56,28 @@ class Settings(BaseSettings):
     # API Settings
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Numzy Receipt Processing"
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
+    ENVIRONMENT: str = Field(default="development")
     
     # Database
-    DATABASE_URL: Optional[str] = Field(default=None, env="DATABASE_URL")
+    DATABASE_URL: Optional[str] = Field(default=None)
     
     # Redis
-    REDIS_URL: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
     
     # OpenAI
-    OPENAI_API_KEY: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
+    OPENAI_API_KEY: Optional[str] = Field(default=None)
     
     # Storage
-    STORAGE_BACKEND: str = Field(default="minio", env="STORAGE_BACKEND")
-    MINIO_ENDPOINT: str = Field(default="localhost:9000", env="MINIO_ENDPOINT")
-    MINIO_ACCESS_KEY: str = Field(default="minioadmin", env="MINIO_ACCESS_KEY")
-    MINIO_SECRET_KEY: str = Field(default="minioadmin", env="MINIO_SECRET_KEY")
-    MINIO_BUCKET_NAME: str = Field(default="receipts", env="MINIO_BUCKET_NAME")
-    MINIO_USE_SSL: bool = Field(default=False, env="MINIO_USE_SSL")
+    STORAGE_BACKEND: str = Field(default="minio")
+    MINIO_ENDPOINT: str = Field(default="localhost:9000")
+    MINIO_ACCESS_KEY: str = Field(default="minioadmin")
+    MINIO_SECRET_KEY: str = Field(default="minioadmin")
+    MINIO_BUCKET_NAME: str = Field(default="receipts")
+    MINIO_USE_SSL: bool = Field(default=False)
     
     # Auth
-    DEV_AUTH_BYPASS: bool = Field(default=True, env="DEV_AUTH_BYPASS")
-    CLERK_SECRET_KEY: Optional[str] = Field(default=None, env="CLERK_SECRET_KEY")
+    DEV_AUTH_BYPASS: bool = Field(default=True)
+    CLERK_SECRET_KEY: Optional[str] = Field(default=None)
     
     # File Upload
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
@@ -86,55 +86,54 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = Field(
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
-        env="BACKEND_CORS_ORIGINS"
     )
     
     # Additional fields that might be in .env
-    ANTHROPIC_API_KEY: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
-    STORAGE_DIRECTORY: str = Field(default="./storage", env="STORAGE_DIRECTORY")
-    TEST_USER_JWT: Optional[str] = Field(default=None, env="TEST_USER_JWT")
-    DRAMATIQ_BROKER_URL: Optional[str] = Field(default=None, env="DRAMATIQ_BROKER_URL")
-    DRAMATIQ_PROMETHEUS_ENABLED: bool = Field(default=False, env="DRAMATIQ_PROMETHEUS_ENABLED")
-    DRAMATIQ_PROMETHEUS_ADDR: str = Field(default="127.0.0.1", env="DRAMATIQ_PROMETHEUS_ADDR")
-    DRAMATIQ_PROMETHEUS_PORT: int = Field(default=9191, env="DRAMATIQ_PROMETHEUS_PORT")
+    ANTHROPIC_API_KEY: Optional[str] = Field(default=None)
+    STORAGE_DIRECTORY: str = Field(default="./storage")
+    TEST_USER_JWT: Optional[str] = Field(default=None)
+    DRAMATIQ_BROKER_URL: Optional[str] = Field(default=None)
+    DRAMATIQ_PROMETHEUS_ENABLED: bool = Field(default=False)
+    DRAMATIQ_PROMETHEUS_ADDR: str = Field(default="127.0.0.1")
+    DRAMATIQ_PROMETHEUS_PORT: int = Field(default=9191)
     MCP_URL: Optional[str] = Field(default=None, env="MCP_URL")
-    SECRET_KEY: str = Field(default="changeme", env="SECRET_KEY")
-    STRIPE_API_KEY: Optional[str] = Field(default=None, env="STRIPE_API_KEY")
+    SECRET_KEY: str = Field(default="changeme")
+    STRIPE_API_KEY: Optional[str] = Field(default=None)
     NEXT_PUBLIC_API_URL: Optional[str] = Field(default=None, env="NEXT_PUBLIC_API_URL")
     # Frontend base URL used for Stripe redirects
-    FRONTEND_BASE_URL: str = Field(default="http://localhost:3000", env="FRONTEND_BASE_URL")
+    FRONTEND_BASE_URL: str = Field(default="http://localhost:3000")
     # Dev DB fallback (fail fast by default)
-    DB_DEV_FALLBACK_SQLITE: bool = Field(default=False, env="DB_DEV_FALLBACK_SQLITE")
+    DB_DEV_FALLBACK_SQLITE: bool = Field(default=False)
     
     # Sentry
-    SENTRY_DSN: Optional[str] = Field(default=None, env="SENTRY_DSN")
-    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.0, env="SENTRY_TRACES_SAMPLE_RATE")
-    SENTRY_PROFILES_SAMPLE_RATE: float = Field(default=0.0, env="SENTRY_PROFILES_SAMPLE_RATE")
+    SENTRY_DSN: Optional[str] = Field(default=None)
+    SENTRY_TRACES_SAMPLE_RATE: float = Field(default=0.0)
+    SENTRY_PROFILES_SAMPLE_RATE: float = Field(default=0.0)
     # Optional Sentry release name to tag backend/worker events consistently with frontend
-    SENTRY_RELEASE: Optional[str] = Field(default=None, env="SENTRY_RELEASE")
+    SENTRY_RELEASE: Optional[str] = Field(default=None)
     
     # Stripe
-    STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRET")
+    STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None)
     # Comma-separated list of webhook secrets to support rotation seamlessly
-    STRIPE_WEBHOOK_SECRETS: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_SECRETS")
+    STRIPE_WEBHOOK_SECRETS: Optional[str] = Field(default=None)
     # Optional: allowlist of webhook event types to process (supports patterns like invoice.*)
-    STRIPE_WEBHOOK_ALLOWED_EVENTS: Optional[str] = Field(default=None, env="STRIPE_WEBHOOK_ALLOWED_EVENTS")
+    STRIPE_WEBHOOK_ALLOWED_EVENTS: Optional[str] = Field(default=None)
     # Optional: known price IDs to map to plans
-    STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_MONTHLY")
-    STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PRO_YEARLY")
-    STRIPE_PRICE_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_TEAM_MONTHLY")
-    STRIPE_PRICE_PERSONAL_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_PERSONAL_MONTHLY")
-    STRIPE_PRICE_BUSINESS_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_PRICE_BUSINESS_MONTHLY")
+    STRIPE_PRICE_PRO_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_PRICE_PRO_YEARLY: Optional[str] = Field(default=None)
+    STRIPE_PRICE_TEAM_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_PRICE_PERSONAL_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_PRICE_BUSINESS_MONTHLY: Optional[str] = Field(default=None)
     # Optional: prefer price.lookup_key instead of hard-coded IDs
-    STRIPE_LOOKUP_PRO_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_MONTHLY")
-    STRIPE_LOOKUP_PRO_YEARLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PRO_YEARLY")
-    STRIPE_LOOKUP_TEAM_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_TEAM_MONTHLY")
-    STRIPE_LOOKUP_PERSONAL_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_PERSONAL_MONTHLY")
-    STRIPE_LOOKUP_BUSINESS_MONTHLY: Optional[str] = Field(default=None, env="STRIPE_LOOKUP_BUSINESS_MONTHLY")
+    STRIPE_LOOKUP_PRO_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_LOOKUP_PRO_YEARLY: Optional[str] = Field(default=None)
+    STRIPE_LOOKUP_TEAM_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_LOOKUP_PERSONAL_MONTHLY: Optional[str] = Field(default=None)
+    STRIPE_LOOKUP_BUSINESS_MONTHLY: Optional[str] = Field(default=None)
     # Optional: Stripe Billing Portal configuration ID
-    STRIPE_PORTAL_CONFIGURATION_ID: Optional[str] = Field(default=None, env="STRIPE_PORTAL_CONFIGURATION_ID")
+    STRIPE_PORTAL_CONFIGURATION_ID: Optional[str] = Field(default=None)
     # Optional: enable Stripe automatic tax on subscriptions/checkout
-    STRIPE_AUTOMATIC_TAX_ENABLED: bool = Field(default=False, env="STRIPE_AUTOMATIC_TAX_ENABLED")
+    STRIPE_AUTOMATIC_TAX_ENABLED: bool = Field(default=False)
     
     # Legacy Config class no longer required; using model_config above
 

@@ -155,6 +155,10 @@ async def stripe_webhook(request: Request):
         return JSONResponse(status_code=200, content={"received": True, "queued": True, "type": event_type})
     except Exception as e:
         logger.warning("[stripe] failed to enqueue event for async processing: %s", e)
+        try:
+            sentry_metric_inc("stripe.webhook.enqueue_error", tags={"event_type": event_type})
+        except Exception:
+            pass
 
     try:
         # 1. Checkout completion -------------------------------------------------
@@ -404,6 +408,10 @@ async def stripe_webhook(request: Request):
             logger.debug("[stripe] unhandled event type=%s id=%s", event_type, data_object.get("id"))
     except Exception as e:  # pragma: no cover - defensive
         logger.exception("[stripe] error handling event %s: %s", event_type, e)
+        try:
+            sentry_metric_inc("stripe.webhook.handler_error", tags={"event_type": event_type})
+        except Exception:
+            pass
 
     return JSONResponse(status_code=200, content={"received": True, "type": event_type})
 
