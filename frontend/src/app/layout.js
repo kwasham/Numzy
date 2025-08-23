@@ -1,10 +1,15 @@
+import * as React from "react";
+import { Auth0Provider } from "@auth0/nextjs-auth0";
 import InitColorSchemeScript from "@mui/material/InitColorSchemeScript";
 
 import "@/styles/global.css";
 
 import { appConfig } from "@/config/app";
+import { AuthStrategy } from "@/lib/auth-strategy";
 import { getSettings as getPersistedSettings } from "@/lib/settings";
-import { UnifiedAuthProvider } from "@/components/auth/unified-auth-provider";
+import { AuthProvider as CognitoProvider } from "@/components/auth/cognito/auth-context";
+import { AuthProvider as CustomAuthProvider } from "@/components/auth/custom/auth-context";
+import { AuthProvider as SupabaseProvider } from "@/components/auth/supabase/auth-context";
 import { Analytics } from "@/components/core/analytics";
 import { EmotionCacheProvider } from "@/components/core/emotion-cache";
 import { I18nProvider } from "@/components/core/i18n-provider";
@@ -23,18 +28,51 @@ export const viewport = {
 	themeColor: appConfig.themeColor,
 };
 
+// Dynamic auth provider selection (original strategy-based logic)
+// For Clerk we use a dynamic import to avoid adding it to the bundle when unused.
+
 export default async function Layout({ children }) {
 	const settings = await getPersistedSettings();
 	const direction = settings.direction ?? appConfig.direction;
 	const language = settings.language ?? appConfig.language;
 
-	// Auth provider selection moved to client component for proper Clerk script loading.
+	let AuthProvider = React.Fragment;
+	let clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+	switch (appConfig.authStrategy) {
+		case AuthStrategy.AUTH0: {
+			AuthProvider = Auth0Provider;
+			break;
+		}
+		case AuthStrategy.CLERK: {
+			const { ClerkProvider } = await import("@clerk/nextjs");
+			const ClerkWrapper = (props) => <ClerkProvider publishableKey={clerkPublishableKey} {...props} />;
+			ClerkWrapper.displayName = "ClerkWrapper";
+			AuthProvider = ClerkWrapper;
+			break;
+		}
+		case AuthStrategy.COGNITO: {
+			AuthProvider = CognitoProvider;
+			break;
+		}
+		case AuthStrategy.CUSTOM: {
+			AuthProvider = CustomAuthProvider;
+			break;
+		}
+		case AuthStrategy.SUPABASE: {
+			AuthProvider = SupabaseProvider;
+			break;
+		}
+		default: {
+			AuthProvider = React.Fragment;
+		}
+	}
 
 	return (
 		<html dir={direction} lang={language} suppressHydrationWarning>
 			<body>
 				<InitColorSchemeScript attribute="class" />
-				<UnifiedAuthProvider>
+				<AuthProvider>
 					<Analytics>
 						<LocalizationProvider>
 							<SettingsProvider settings={settings}>
@@ -52,7 +90,7 @@ export default async function Layout({ children }) {
 							</SettingsProvider>
 						</LocalizationProvider>
 					</Analytics>
-				</UnifiedAuthProvider>
+				</AuthProvider>
 			</body>
 		</html>
 	);

@@ -128,7 +128,8 @@ cleanup() {
     fi
   fi
 }
-trap cleanup EXIT INT TERM
+# Only clean up (stop frontend) on interrupt/termination, not normal exit
+trap cleanup INT TERM
 
 if [[ $FRESH -eq 1 ]]; then
   echo "[run-be-fe] Fresh start: docker compose down -v"
