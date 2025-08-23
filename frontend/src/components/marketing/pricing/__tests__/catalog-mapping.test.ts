@@ -1,4 +1,4 @@
-import { PRICING_CATALOG, PRICING_ORDER } from "@shared/pricing/catalog";
+import { PRICING_CATALOG, PRICING_ORDER } from "../../../../../../shared/pricing/catalog"
 
 import { PLAN_FEATURES, PLAN_METADATA, PLAN_ORDER, PLAN_QUOTAS, RAW_PRICING } from "../pricing-config";
 

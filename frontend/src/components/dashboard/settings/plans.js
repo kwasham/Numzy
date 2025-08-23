@@ -45,8 +45,8 @@ function mapPlanToCardId(planName) {
 }
 
 export function Plans() {
-	const { getToken } = useAuth();
 	const router = useRouter();
+	const { getToken } = useAuth();
 	const [state, setState] = React.useState({
 		loading: true,
 		currentPlanId: PlanId.FREE,
@@ -54,7 +54,18 @@ export function Plans() {
 		selected: null,
 		upgrading: false,
 		yearly: false,
+		preview: { loading: false, data: null, error: null, deferDowngrade: true },
+		pendingPlan: null,
 	});
+
+	const toBackendPlan = React.useCallback((pid) => {
+		if (!pid) return null;
+		if (pid === PlanId.FREE) return "free";
+		if (pid === PlanId.PERSONAL) return "personal";
+		if (pid === PlanId.PRO) return "pro";
+		if (pid === PlanId.BUSINESS) return "business";
+		return String(pid).toLowerCase();
+	}, []);
 
 	const fetchStatus = React.useCallback(async () => {
 		const token = (await getToken?.()) || null;
@@ -73,11 +84,12 @@ export function Plans() {
 				const data = await fetchStatus();
 				if (!active) return;
 				const currentPlanId = mapPlanToCardId(data?.plan);
-				setState((prev) => ({ ...prev, loading: false, currentPlanId, catalog: data?.catalog ?? null }));
+				const subscription = data?.subscription || {};
+				const pendingPlan = subscription?.pending_plan ? mapPlanToCardId(subscription.pending_plan) : null;
+				setState((prev) => ({ ...prev, loading: false, currentPlanId, catalog: data?.catalog ?? null, pendingPlan }));
 			} catch {
 				if (!active) return;
-				// Fallback to free on error
-				setState((prev) => ({ ...prev, loading: false, currentPlanId: "free" }));
+				setState((prev) => ({ ...prev, loading: false, currentPlanId: PlanId.FREE }));
 			}
 		})();
 		return () => {
@@ -85,18 +97,78 @@ export function Plans() {
 		};
 	}, [fetchStatus]);
 
-	const handleSelect = (planId) => {
-		setState((prev) => ({ ...prev, selected: planId }));
-	};
+	const runPreview = React.useCallback(async () => {
+		if (state.currentPlanId === PlanId.FREE) return;
+		const target = state.selected;
+		if (!target || target === state.currentPlanId) return;
+		setState((p) => ({ ...p, preview: { ...p.preview, loading: true, error: null } }));
+		try {
+			const token = (await getToken?.()) || null;
+			const res = await fetch(`${API_URL}/billing/subscription/preview`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+				body: JSON.stringify({ target_plan: toBackendPlan(target), interval: state.yearly ? "yearly" : "monthly" }),
+			});
+			if (!res.ok) throw new Error(`Preview failed (${res.status})`);
+			const data = await res.json();
+			setState((p) => ({ ...p, preview: { ...p.preview, loading: false, data } }));
+		} catch (error) {
+			setState((p) => ({ ...p, preview: { ...p.preview, loading: false, error: error?.message || "Failed" } }));
+		}
+	}, [state.currentPlanId, state.selected, state.yearly, getToken, toBackendPlan]);
 
-	const handleUpgrade = async () => {
-		const target = state.selected || state.currentPlanId;
-		// No-op if selecting current plan or FREE
-		if (target === state.currentPlanId || target === PlanId.FREE) return;
-		setState((prev) => ({ ...prev, upgrading: true }));
-		// Navigate to custom Elements checkout page, pass plan in query
-		router.push(`/subscribe?plan=${encodeURIComponent(target)}`);
-		setState((prev) => ({ ...prev, upgrading: false }));
+	React.useEffect(() => {
+		runPreview();
+	}, [runPreview]);
+
+	const isDowngrade = React.useMemo(() => {
+		if (state.preview.data) return !state.preview.data.is_upgrade;
+		if (!state.selected || !state.catalog) return false;
+		const cur = state.catalog?.[state.currentPlanId];
+		const tgt = state.catalog?.[state.selected];
+		if (!cur || !tgt) return false;
+		const curPrice = cur?.monthly?.price || 0;
+		const tgtPrice = tgt?.monthly?.price || 0;
+		return tgtPrice < curPrice;
+	}, [state.preview.data, state.selected, state.currentPlanId, state.catalog]);
+
+	const handleSelect = (planId) => setState((p) => ({ ...p, selected: planId }));
+
+	const handleApply = async () => {
+		const target = state.selected;
+		if (!target || target === state.currentPlanId) return;
+		if (state.currentPlanId === PlanId.FREE) {
+			setState((p) => ({ ...p, upgrading: true }));
+			router.push(`/subscribe?plan=${encodeURIComponent(target)}&interval=${state.yearly ? "yearly" : "monthly"}`);
+			setState((p) => ({ ...p, upgrading: false }));
+			return;
+		}
+		setState((p) => ({ ...p, upgrading: true }));
+		try {
+			const token = (await getToken?.()) || null;
+			const body = {
+				target_plan: toBackendPlan(target),
+				interval: state.yearly ? "yearly" : "monthly",
+				defer_downgrade: isDowngrade && state.preview.deferDowngrade,
+			};
+			const res = await fetch(`${API_URL}/billing/subscription/change`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+				body: JSON.stringify(body),
+			});
+			if (!res.ok) throw new Error(`Change failed (${res.status})`);
+			await res.json();
+			try {
+				globalThis.sessionStorage?.setItem("numzy_plan_refresh_until", String(Date.now() + 60_000));
+			} catch {
+				/* ignore */
+			}
+			globalThis.location.reload();
+		} catch (error) {
+			alert(error?.message || "Unable to change plan");
+		} finally {
+			setState((p) => ({ ...p, upgrading: false }));
+		}
 	};
 
 	const hasYearly = React.useMemo(() => {
@@ -107,9 +179,19 @@ export function Plans() {
 	const resolveDisplayPrice = (planId) => {
 		const entry = state.catalog?.[planId];
 		if (!entry) return FALLBACK_PRICES[planId];
-		if (state.yearly && entry.yearly?.price) return entry.yearly.price / 12; // per-month equivalent
+		if (state.yearly && entry.yearly?.price) return entry.yearly.price / 12;
 		return entry.monthly?.price ?? entry.price ?? FALLBACK_PRICES[planId];
 	};
+
+	const actionDisabled = !state.selected || state.selected === state.currentPlanId || state.upgrading;
+	const actionLabel =
+		state.currentPlanId === PlanId.FREE
+			? "Subscribe"
+			: isDowngrade
+				? state.preview.deferDowngrade
+					? "Schedule downgrade"
+					: "Downgrade now"
+				: "Apply change";
 
 	return (
 		<Card>
@@ -119,8 +201,12 @@ export function Plans() {
 						<CreditCardIcon fontSize="var(--Icon-fontSize)" />
 					</Avatar>
 				}
-				subheader="You can upgrade and downgrade whenever you want."
-				title="Change plan"
+				subheader={
+					state.pendingPlan
+						? `Downgrade to ${state.pendingPlan} scheduled for period end.`
+						: "Select a plan. Downgrades can be scheduled for period end."
+				}
+				title="Plans"
 			/>
 			<CardContent>
 				<Stack divider={<Divider />} spacing={3}>
@@ -149,11 +235,18 @@ export function Plans() {
 								const override = state.catalog?.[planId] || {};
 								const currency = override?.currency || "USD";
 								const price = resolveDisplayPrice(planId);
+								// Hide non-free plans if no price present in catalog (missing configuration)
+								if (planId !== PlanId.FREE && !override?.monthly?.price && !override?.price) return null;
 								const plan = { id: planId, name: base.name, currency, price };
 								return (
 									<Grid key={planId} size={{ md: 3, xs: 12 }}>
 										<Box onClick={() => handleSelect(planId)}>
 											<PlanCard isCurrent={planId === state.currentPlanId} plan={plan} />
+											{state.pendingPlan && state.pendingPlan === planId && planId !== state.currentPlanId && (
+												<Typography variant="caption" sx={{ color: "warning.main", pl: 1 }}>
+													Scheduled
+												</Typography>
+											)}
 											{/* Capabilities summary (quick glance) */}
 											<Stack sx={{ px: 1, pt: 1 }} spacing={0.5}>
 												<Typography variant="caption">Quota: {base.monthlyQuota}</Typography>
@@ -168,10 +261,53 @@ export function Plans() {
 								);
 							})}
 						</Grid>
-						<Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-							<Button onClick={handleUpgrade} disabled={state.upgrading} variant="contained">
-								{state.upgrading ? "Redirecting…" : "Upgrade plan"}
-							</Button>
+						{/* Preview & action */}
+						<Box sx={{ mt: 2 }}>
+							{state.preview.loading && <Typography variant="body2">Computing preview…</Typography>}
+							{state.preview.error && (
+								<Typography variant="body2" color="error">
+									Preview error: {state.preview.error}
+								</Typography>
+							)}
+							{state.preview.data && (
+								<Stack spacing={0.5} sx={{ mb: 1 }}>
+									<Typography variant="body2">
+										Current: {(state.preview.data.current_amount / 100).toFixed(2)}{" "}
+										{state.preview.data.currency.toUpperCase()} / {state.preview.data.interval}
+									</Typography>
+									<Typography variant="body2">
+										New: {(state.preview.data.new_amount / 100).toFixed(2)} {state.preview.data.currency.toUpperCase()}{" "}
+										/ {state.preview.data.interval}
+									</Typography>
+									<Typography variant="body2" color={isDowngrade ? "warning.main" : "success.main"}>
+										{isDowngrade ? "Downgrade" : "Upgrade"} difference:{" "}
+										{(Math.abs(state.preview.data.difference) / 100).toFixed(2)}{" "}
+										{state.preview.data.currency.toUpperCase()} per {state.preview.data.interval}
+									</Typography>
+								</Stack>
+							)}
+							{isDowngrade && state.currentPlanId !== PlanId.FREE && state.selected !== state.currentPlanId && (
+								<Box sx={{ mb: 1 }}>
+									<label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+										<input
+											type="checkbox"
+											checked={state.preview.deferDowngrade}
+											onChange={() =>
+												setState((p) => ({
+													...p,
+													preview: { ...p.preview, deferDowngrade: !p.preview.deferDowngrade },
+												}))
+											}
+										/>
+										<span style={{ fontSize: 12 }}>Schedule at period end (recommended)</span>
+									</label>
+								</Box>
+							)}
+							<Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+								<Button disabled={actionDisabled} onClick={handleApply} variant="contained">
+									{state.upgrading ? (state.currentPlanId === PlanId.FREE ? "Redirecting…" : "Applying…") : actionLabel}
+								</Button>
+							</Box>
 						</Box>
 					</Stack>
 					<Stack spacing={3}>

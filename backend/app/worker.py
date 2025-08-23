@@ -58,6 +58,31 @@ dramatiq.set_broker(broker)
 print("Dramatiq broker configured successfully")
 
 # Import tasks to register them
-from app.core.tasks import extract_and_audit_receipt, run_evaluation  # noqa: F401
+from app.core.tasks import extract_and_audit_receipt, run_evaluation, reconcile_pending_subscription_downgrades  # noqa: F401
+
+print("Reconciliation actor registered: reconcile_pending_subscription_downgrades")
 
 print("Tasks registered successfully")
+
+# Optional lightweight cron loop (avoid external scheduler) – enabled via env RECONCILE_CRON_ENABLED=true
+import threading, time
+
+def _maybe_start_reconcile_cron():  # pragma: no cover - simple orchestrator
+    if os.getenv("RECONCILE_CRON_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        return
+    interval = int(os.getenv("RECONCILE_CRON_INTERVAL_SECONDS", "420"))  # default 7m
+    lookahead = int(os.getenv("RECONCILE_CRON_LOOKAHEAD_SECONDS", "900"))  # 15m lookahead
+    batch_limit = int(os.getenv("RECONCILE_CRON_BATCH_LIMIT", "200"))
+    def loop():
+        while True:
+            try:
+                print(f"[cron] enqueue reconcile_pending_subscription_downgrades interval={interval}s lookahead={lookahead}s batch_limit={batch_limit}")
+                reconcile_pending_subscription_downgrades.send(lookahead_seconds=lookahead, batch_limit=batch_limit)
+            except Exception as e:  # pragma: no cover
+                print(f"[cron] failed to enqueue reconcile task: {e}")
+            time.sleep(interval)
+    t = threading.Thread(target=loop, name="reconcile-cron", daemon=True)
+    t.start()
+    print(f"Reconciliation cron loop started (interval={interval}s)")
+
+_maybe_start_reconcile_cron()

@@ -157,6 +157,7 @@ async def stripe_webhook(request: Request):
         logger.warning("[stripe] failed to enqueue event for async processing: %s", e)
 
     try:
+        # 1. Checkout completion -------------------------------------------------
         if event_type == "checkout.session.completed":
             sess_id = data_object.get("id")
             mode = data_object.get("mode")
@@ -169,7 +170,6 @@ async def stripe_webhook(request: Request):
                 sess_id, mode, customer, customer_email, subscription, client_ref,
             )
             sentry_metric_inc("stripe.checkout.completed")
-            # Persist stripe_customer_id on the user when we can safely associate it.
             try:
                 if customer:
                     async with AsyncSessionLocal() as session:
@@ -193,11 +193,8 @@ async def stripe_webhook(request: Request):
             except Exception as link_ex:  # pragma: no cover
                 logger.exception("[stripe] failed linking stripe customer to user: %s", link_ex)
 
-        elif event_type in (
-            "customer.subscription.created",
-            "customer.subscription.updated",
-            "customer.subscription.deleted",
-        ):
+        # 2. Subscription lifecycle ---------------------------------------------
+        elif event_type in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
             sub_id = data_object.get("id")
             status = data_object.get("status")
             customer = data_object.get("customer")
@@ -218,22 +215,15 @@ async def stripe_webhook(request: Request):
             )
             sentry_metric_inc("stripe.subscription.event", tags={"event_type": event_type, "status": status or ""})
             try:
-                sentry_set_tags({
-                    "stripe.subscription_status": status or "",
-                    "stripe.price_id": price_id or "",
-                })
+                sentry_set_tags({"stripe.subscription_status": status or "", "stripe.price_id": price_id or ""})
             except Exception:
                 pass
-
-            # If subscription was deleted or set to canceled, downgrade user to FREE
             try:
                 if customer:
                     async with AsyncSessionLocal() as session:
                         user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
                         if user:
-                            # Persist raw subscription status
                             user.subscription_status = status
-                            # Deletions / cancellations downgrade plan
                             if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
                                 if getattr(user, "plan", None) != PlanType.FREE:
                                     user.plan = PlanType.FREE
@@ -244,7 +234,7 @@ async def stripe_webhook(request: Request):
                                 user.payment_state = "past_due" if status in ("unpaid",) else None
                             elif status in ("active", "trialing") and price_id:
                                 new_plan: PlanType | None = None
-                                if price_id == settings.STRIPE_PRICE_PRO_MONTHLY or price_id == settings.STRIPE_PRICE_PRO_YEARLY:
+                                if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
                                     new_plan = PlanType.PRO
                                 elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                                     new_plan = PlanType.BUSINESS
@@ -259,6 +249,7 @@ async def stripe_webhook(request: Request):
             except Exception as db_ex:  # pragma: no cover
                 logger.exception("[stripe] failed to downgrade on subscription deletion: %s", db_ex)
 
+        # 3. Invoice paid / succeeded (recoveries) ------------------------------
         elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
@@ -266,8 +257,6 @@ async def stripe_webhook(request: Request):
             amount_paid = data_object.get("amount_paid")
             billing_reason = data_object.get("billing_reason")
             customer_email = data_object.get("customer_email")
-
-            # Extract price_id if present to map plan
             price_id = None
             try:
                 lines = data_object.get("lines", {}).get("data", [])
@@ -275,7 +264,6 @@ async def stripe_webhook(request: Request):
                     price_id = lines[0].get("price", {}).get("id")
             except Exception:
                 price_id = None
-
             try:
                 async with AsyncSessionLocal() as session:
                     user = None
@@ -283,56 +271,46 @@ async def stripe_webhook(request: Request):
                         user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
                     if not user and customer_email:
                         user = await session.scalar(select(User).where(User.email == customer_email))
-
                     changed = False
-                    # Backfill stripe_customer_id if we matched by email
+                    prev_state = getattr(user, "payment_state", None) if user else None
                     if user and customer and not getattr(user, "stripe_customer_id", None):
                         user.stripe_customer_id = customer
                         changed = True
-                        logger.info(
-                            "[stripe] backfilled stripe_customer_id for user_id=%s email=%s customer=%s via invoice %s",
-                            getattr(user, "id", None), getattr(user, "email", None), customer, invoice_id,
-                        )
-
-                    # Map plan if price matches configured plans
                     if price_id:
                         plan: PlanType | None = None
-                        if price_id == settings.STRIPE_PRICE_PRO_MONTHLY or price_id == settings.STRIPE_PRICE_PRO_YEARLY:
+                        if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
                             plan = PlanType.PRO
                         elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                             plan = PlanType.BUSINESS
                         if user and plan is not None and getattr(user, "plan", None) != plan:
                             user.plan = plan
                             changed = True
-                            logger.info(
-                                "[stripe] updated user plan user_id=%s clerk_id=%s email=%s plan=%s via invoice %s",
-                                getattr(user, "id", None), getattr(user, "clerk_id", None), getattr(user, "email", None), plan, invoice_id,
-                            )
-
+                    if user:
+                        if prev_state == "past_due":
+                            sentry_metric_inc("stripe.dunning.recovered")
+                            user.last_invoice_status = "paid"
+                        elif prev_state == "requires_action":
+                            sentry_metric_inc("stripe.sca.completed")
+                            user.last_invoice_status = "paid"
+                        if getattr(user, "payment_state", None) != "ok":
+                            user.payment_state = "ok"
+                            changed = True
                     if user and changed:
                         await session.commit()
-                    elif not user:
-                        logger.warning(
-                            "[stripe] no user found for invoice (customer=%s, email=%s) to apply updates",
-                            customer, customer_email,
-                        )
             except Exception as db_ex:  # pragma: no cover
                 logger.exception("[stripe] DB update failed for email=%s: %s", customer_email, db_ex)
-
             logger.info(
                 "[stripe] invoice success id=%s customer=%s subscription=%s amount_paid=%s reason=%s",
                 invoice_id, customer, subscription, amount_paid, billing_reason,
             )
             sentry_metric_inc("stripe.invoice.paid")
             try:
-                sentry_set_tags({
-                    "stripe.invoice_id": invoice_id or "",
-                    "stripe.price_id": price_id or "",
-                })
+                sentry_set_tags({"stripe.invoice_id": invoice_id or "", "stripe.price_id": price_id or ""})
             except Exception:
                 pass
 
-        elif event_type in ("invoice.payment_failed",):
+        # 4. Invoice failed (enter dunning) -------------------------------------
+        elif event_type == "invoice.payment_failed":
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
             subscription = data_object.get("subscription")
@@ -349,20 +327,15 @@ async def stripe_webhook(request: Request):
                 invoice_id, customer, subscription, attempt_count,
             )
             sentry_metric_inc("stripe.invoice.failed")
+            sentry_metric_inc("stripe.dunning.entered")
             try:
                 sentry_breadcrumb(
-                    category="stripe",
-                    message="invoice.payment_failed",
-                    level="warning",
+                    category="stripe", message="invoice.payment_failed", level="warning",
                     data={"invoice_id": invoice_id, "customer": customer, "subscription": subscription, "attempts": attempt_count, "price_id": price_id},
                 )
-                sentry_set_tags({
-                    "stripe.invoice_id": invoice_id or "",
-                    "stripe.price_id": price_id or "",
-                })
+                sentry_set_tags({"stripe.invoice_id": invoice_id or "", "stripe.price_id": price_id or ""})
             except Exception:
                 pass
-            # Persist invoice failure state
             try:
                 if customer:
                     async with AsyncSessionLocal() as session:
@@ -371,14 +344,11 @@ async def stripe_webhook(request: Request):
                             user.payment_state = "past_due"
                             user.last_invoice_status = "failed"
                             await session.commit()
-                            logger.info(
-                                "[stripe] marked user id=%s email=%s payment_state=past_due from invoice %s",
-                                getattr(user, "id", None), getattr(user, "email", None), invoice_id,
-                            )
             except Exception as db_ex:  # pragma: no cover
                 logger.exception("[stripe] failed to persist past_due: %s", db_ex)
 
-        elif event_type in ("invoice.payment_action_required",):
+        # 5. Invoice action required (enter SCA) --------------------------------
+        elif event_type == "invoice.payment_action_required":
             invoice_id = data_object.get("id")
             customer = data_object.get("customer")
             subscription = data_object.get("subscription")
@@ -389,25 +359,17 @@ async def stripe_webhook(request: Request):
                     price_id = lines[0].get("price", {}).get("id")
             except Exception:
                 price_id = None
-            logger.warning(
-                "[stripe] invoice requires action id=%s customer=%s subscription=%s",
-                invoice_id, customer, subscription,
-            )
+            logger.warning("[stripe] invoice requires action id=%s customer=%s subscription=%s", invoice_id, customer, subscription)
             sentry_metric_inc("stripe.invoice.action_required")
+            sentry_metric_inc("stripe.sca.entered")
             try:
                 sentry_breadcrumb(
-                    category="stripe",
-                    message="invoice.payment_action_required",
-                    level="warning",
+                    category="stripe", message="invoice.payment_action_required", level="warning",
                     data={"invoice_id": invoice_id, "customer": customer, "subscription": subscription, "price_id": price_id},
                 )
-                sentry_set_tags({
-                    "stripe.invoice_id": invoice_id or "",
-                    "stripe.price_id": price_id or "",
-                })
+                sentry_set_tags({"stripe.invoice_id": invoice_id or "", "stripe.price_id": price_id or ""})
             except Exception:
                 pass
-            # Persist requires_action so UI can rely on cached user state quickly
             try:
                 if customer:
                     async with AsyncSessionLocal() as session:
@@ -419,8 +381,8 @@ async def stripe_webhook(request: Request):
             except Exception as db_ex:  # pragma: no cover
                 logger.exception("[stripe] failed to persist requires_action: %s", db_ex)
 
+        # 6. Customer updates ---------------------------------------------------
         elif event_type in ("customer.created", "customer.updated"):
-            # Best-effort backfill on customer events using email
             cust_id = data_object.get("id")
             email = data_object.get("email")
             if cust_id and email:
@@ -430,19 +392,17 @@ async def stripe_webhook(request: Request):
                         if user and not getattr(user, "stripe_customer_id", None):
                             user.stripe_customer_id = cust_id
                             await session.commit()
-                            logger.info(
-                                "[stripe] linked user by email from customer event user_id=%s email=%s customer=%s",
-                                getattr(user, "id", None), email, cust_id,
-                            )
                 except Exception as db_ex:  # pragma: no cover
                     logger.exception("[stripe] DB update failed on customer event for email=%s: %s", email, db_ex)
 
+        # 7. Ancillary low-value events ----------------------------------------
         elif event_type in ("payment_method.attached", "invoice.created", "invoice.finalized", "invoice.updated"):
             logger.debug("[stripe] ancillary event type=%s id=%s", event_type, data_object.get("id"))
 
+        # 8. Fallback -----------------------------------------------------------
         else:
             logger.debug("[stripe] unhandled event type=%s id=%s", event_type, data_object.get("id"))
-    except Exception as e:  # Defensive: never fail webhook due to handler errors
+    except Exception as e:  # pragma: no cover - defensive
         logger.exception("[stripe] error handling event %s: %s", event_type, e)
 
     return JSONResponse(status_code=200, content={"received": True, "type": event_type})

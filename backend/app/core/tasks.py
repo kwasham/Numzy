@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Iterable
 from contextlib import nullcontext
 
 import dramatiq
@@ -42,6 +42,13 @@ from app.core.config import settings
 from app.models.tables import Receipt, BackgroundJob, Evaluation, User
 from app.models.enums import ReceiptStatus, EvaluationStatus, PlanType
 from app.services.extraction_service import ExtractionService
+from app.core.observability import sentry_metric_inc, sentry_breadcrumb  # type: ignore
+
+# Optional Stripe import for billing reconciliation
+try:  # pragma: no cover
+    import stripe  # type: ignore
+except Exception:  # pragma: no cover
+    stripe = None  # type: ignore
 
 # Optional Sentry for spans (worker initialises globally)
 try:  # pragma: no cover - instrumentation only
@@ -177,6 +184,183 @@ def _parse_amount(value: str | None) -> float:
         return float(cleaned)
     except Exception:
         return 0.0
+
+
+@dramatiq.actor(max_retries=0)
+def reconcile_pending_subscription_downgrades(lookahead_seconds: int = 600, batch_limit: int = 200):
+    """Apply scheduled (deferred) subscription downgrades.
+
+    We emulate scheduled downgrades by setting cancel_at_period_end=True and storing the desired
+    target plan in subscription metadata as `pending_plan`. Shortly *before* the period end we
+    swap the price to the lower tier, unset cancel_at_period_end, and clear the metadata marker.
+
+    This task scans non-free users, fetches their current Stripe subscription, and when both:
+      - cancel_at_period_end == True
+      - metadata.pending_plan is present
+      - current_period_end is within lookahead_seconds (default 10m)
+    it performs the downgrade with proration_behavior="none" to avoid credit invoices.
+
+    Assumptions / Simplifications:
+      - We attempt to preserve the billing interval (monthly vs yearly) by inspecting the existing price.
+      - If yearly price for the target plan isn't configured, we fall back to monthly.
+      - If any Stripe errors occur we log and continue; no retries (idempotent safe to rerun soon).
+    """
+    start_time = time.time()
+    applied = 0
+    errors = 0
+    if stripe is None or not settings.STRIPE_API_KEY:
+        print("[reconcile] Stripe not configured; skipping")
+        try:
+            sentry_metric_inc("stripe.subscription.reconcile.run", tags={"status": "skipped", "reason": "no_stripe"})
+            sentry_breadcrumb(category="stripe", message="reconcile.run.skipped", data={"reason": "no_stripe"})
+        except Exception:
+            pass
+        return
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    session = SessionLocal()
+    now_ts = int(time.time())
+    processed = 0
+    try:
+        try:
+            sentry_metric_inc("stripe.subscription.reconcile.run", tags={"status": "started"})
+            sentry_breadcrumb(category="stripe", message="reconcile.run.start", data={"lookahead_seconds": lookahead_seconds, "batch_limit": batch_limit})
+        except Exception:
+            pass
+        # Query candidate users (paid tiers only); limit to avoid huge scans
+        candidates: Iterable[User] = (
+            session.query(User)
+            .filter(User.plan != PlanType.FREE)
+            .limit(batch_limit)
+            .all()
+        )
+        for user in candidates:
+            if processed >= batch_limit:
+                break
+            cust_id = getattr(user, "stripe_customer_id", None)
+            if not cust_id:
+                continue
+            try:
+                subs = stripe.Subscription.list(customer=cust_id, status="all", limit=1)  # type: ignore
+                data = subs.get("data", []) if isinstance(subs, dict) else []
+                if not data:
+                    continue
+                sub = data[0]
+                metadata = (sub.get("metadata") or {}) if isinstance(sub, dict) else {}
+                pending_plan = metadata.get("pending_plan")
+                if not pending_plan:
+                    continue
+                if not sub.get("cancel_at_period_end"):
+                    # metadata leftover? clean it up
+                    try:
+                        stripe.Subscription.modify(sub.get("id"), metadata={k: v for k, v in metadata.items() if k != "pending_plan"})  # type: ignore
+                    except Exception:
+                        pass
+                    continue
+                period_end = sub.get("current_period_end")
+                if not period_end:
+                    continue
+                if int(period_end) - now_ts > lookahead_seconds:
+                    # Not within window yet
+                    continue
+
+                # Determine target interval from existing price
+                target_interval = "monthly"
+                try:
+                    items = sub.get("items", {}).get("data", [])
+                    if items:
+                        cur_price = items[0].get("price", {})
+                        if (cur_price.get("recurring") or {}).get("interval") == "year":
+                            target_interval = "yearly"
+                except Exception:
+                    target_interval = "monthly"
+
+                def _price_for(plan: str, interval: str):
+                    mapping = {
+                        ("personal", "monthly"): getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+                        ("personal", "yearly"): getattr(settings, "STRIPE_PRICE_PERSONAL_YEARLY", None),
+                        ("pro", "monthly"): getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+                        ("pro", "yearly"): getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+                        ("business", "monthly"): getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+                        ("business", "yearly"): getattr(settings, "STRIPE_PRICE_BUSINESS_YEARLY", None),
+                    }
+                    pid = mapping.get((plan, interval))
+                    if not pid and interval == "yearly":
+                        pid = mapping.get((plan, "monthly"))
+                    return pid
+
+                new_price_id = _price_for(pending_plan, target_interval)
+                if not new_price_id:
+                    print(f"[reconcile] missing price for plan={pending_plan} interval={target_interval}; skipping user_id={getattr(user,'id',None)}")
+                    continue
+
+                # Modify subscription: swap price, unset cancel, clear metadata flag
+                item_id = None
+                try:
+                    items = sub.get("items", {}).get("data", [])
+                    if items:
+                        item_id = items[0].get("id")
+                except Exception:
+                    pass
+                if not item_id:
+                    continue
+
+                try:
+                    updated = stripe.Subscription.modify(  # type: ignore
+                        sub.get("id"),
+                        items=[{"id": item_id, "price": new_price_id}],
+                        cancel_at_period_end=False,
+                        proration_behavior="none",
+                        metadata={k: v for k, v in metadata.items() if k != "pending_plan"},
+                    )
+                except Exception as mod_ex:
+                    print(f"[reconcile] failed to apply downgrade sub={sub.get('id')} user_id={getattr(user,'id',None)} err={mod_ex}")
+                    continue
+
+                # Update local user plan
+                try:
+                    if pending_plan == "personal":
+                        user.plan = PlanType.PERSONAL
+                    elif pending_plan == "pro":
+                        user.plan = PlanType.PRO
+                    elif pending_plan == "business":
+                        user.plan = PlanType.BUSINESS
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                processed += 1
+                applied += 1
+                print(f"[reconcile] applied scheduled downgrade sub={sub.get('id')} user_id={getattr(user,'id',None)} -> plan={pending_plan}")
+                try:
+                    sentry_metric_inc("stripe.subscription.downgrade.applied")
+                    sentry_breadcrumb(category="stripe", message="reconcile.downgrade.applied", data={
+                        "subscription_id": sub.get("id"),
+                        "plan": pending_plan,
+                    })
+                except Exception:
+                    pass
+            except Exception as sub_ex:
+                print(f"[reconcile] error user_id={getattr(user,'id',None)} err={sub_ex}")
+                errors += 1
+                continue
+        print(f"[reconcile] completed processed={processed}")
+    finally:
+        duration_ms = int((time.time() - start_time) * 1000)
+        try:
+            sentry_metric_inc("stripe.subscription.reconcile.run", tags={
+                "status": "completed",
+                "applied": str(applied),
+                "errors": str(errors),
+            })
+            sentry_breadcrumb(category="stripe", message="reconcile.run.end", data={
+                "processed": processed,
+                "applied": applied,
+                "errors": errors,
+                "duration_ms": duration_ms,
+            })
+        except Exception:
+            pass
+        session.close()
 
 
 @dramatiq.actor(max_retries=3)

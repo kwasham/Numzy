@@ -17,7 +17,7 @@ import { FEATURE_DETAILS } from "./pricing-config-refactored";
  * responsive typography and consistent spacing to create a clean layout.
  */
 export function Plan({
-  action,
+  
   currency,
   description,
   id,
