@@ -24,12 +24,20 @@ except Exception as e:  # pragma: no cover
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
+# Align with events explicitly handled or queued in webhook handler:
+# - checkout.session.completed (checkout linking)
+# - customer.subscription.* (plan / status reconciliation)
+# - invoice.payment_succeeded & invoice.paid (Stripe may emit either depending on API version)
+# - invoice.payment_failed (dunning enter)
+# - invoice.payment_action_required (SCA enter)
+# - customer.updated (customer email / metadata sync)
 DEFAULT_ALLOWED = [
     'checkout.session.completed',
     'customer.subscription.created',
     'customer.subscription.updated',
     'customer.subscription.deleted',
     'invoice.paid',
+    'invoice.payment_succeeded',
     'invoice.payment_failed',
     'invoice.payment_action_required',
     'customer.updated',
@@ -40,6 +48,8 @@ def main():
     parser.add_argument('--endpoint', required=True, help='Webhook endpoint ID (we_...)')
     parser.add_argument('--allowed', nargs='*', default=DEFAULT_ALLOWED, help='Allowed event types')
     parser.add_argument('--apply', action='store_true', help='Apply changes (otherwise dry-run)')
+    parser.add_argument('--print-diff', action='store_true', help='Print a machine-readable JSON diff summary')
+    parser.add_argument('--audit-json', help='Write full before/after JSON snapshot to file (dry-run safe)')
     args = parser.parse_args()
 
     api_key = os.getenv('STRIPE_API_KEY')
@@ -59,8 +69,36 @@ def main():
     to_remove = current - allowed
     to_add = allowed - current
 
-    print('Current events:', sorted(current))
-    print('Allowed target :', sorted(allowed))
+    current_sorted = sorted(current)
+    allowed_sorted = sorted(allowed)
+    print('Current events:', current_sorted)
+    print('Allowed target :', allowed_sorted)
+    if args.print_diff:
+        import json as _json
+        diff_obj = {
+            'endpoint': args.endpoint,
+            'current': current_sorted,
+            'target': allowed_sorted,
+            'add': sorted(to_add),
+            'remove': sorted(to_remove),
+            'unchanged': sorted(current & allowed),
+            'apply': bool(args.apply),
+        }
+        print('DIFF_JSON:', _json.dumps(diff_obj, separators=(',', ':')))
+
+    if args.audit_json:
+        try:
+            import json as _json
+            with open(args.audit_json, 'w') as f:
+                _json.dump({
+                    'endpoint': args.endpoint,
+                    'current': current_sorted,
+                    'target': allowed_sorted,
+                }, f, indent=2)
+            print(f'Audit snapshot written to {args.audit_json}')
+        except Exception as e:  # pragma: no cover
+            print('Failed writing audit snapshot:', e, file=sys.stderr)
+
     if not to_remove and not to_add:
         print('No changes needed.')
         return 0

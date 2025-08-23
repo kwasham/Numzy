@@ -2,7 +2,7 @@
 
 Purpose: a practical, production-hardening guide for our Stripe Billing integration across FastAPI backend and Next.js frontend. Use this document to track readiness and verify go-live steps.
 
-Last updated: 2025-08-21
+Last updated: 2025-08-23 (added SCA & dunning funnel metrics + recovery instrumentation)
 
 ---
 
@@ -64,12 +64,15 @@ Notes
 
 ### 2) Subscription lifecycle correctness
 
-- [ ] On `invoice.payment_failed` → mark account “past_due” or similar; prompt to update PM.
-- [ ] On `invoice.payment_action_required` → flag SCA required and guide user to complete.
-  - Backend webhook now logs and flags these states; UI prompts still needed.
+- [x] On `invoice.payment_failed` → mark account `past_due`; backend sets `payment_state=past_due`; UI banner & test present.
+- [x] On `invoice.payment_action_required` → mark `requires_action`; backend sets state; UI banner & test present.
 - [x] On `customer.subscription.created/updated` → set plan based on active price.
 - [x] On `customer.subscription.deleted` or status=unpaid/canceled → downgrade safely.
-- [ ] Consistent proration behavior for upgrades/downgrades (document policy).
+- [x] Yearly interval support in plan change endpoint (interval switching implemented).
+- [x] Subscription change preview endpoint (delta + upgrade/downgrade classification).
+- [x] Deferred downgrade scheduling (sets `cancel_at_period_end` + `metadata.pending_plan`).
+- [x] Reconciliation worker applies scheduled downgrade before period end (Dramatiq actor `reconcile_pending_subscription_downgrades`; needs prod scheduling & monitoring).
+- [ ] Consistent proration policy documentation & enforcement (core doc & upgrade/downgrade tests DONE; interval switch nuance + invoice line item validation PENDING).
 
 Files to touch
 
@@ -144,7 +147,10 @@ Refs
 
 ### 2) Plans UI
 
-- [ ] Hide tiers with no configured price; show yearly toggle if yearly prices exist.
+- [x] Yearly toggle (auto-shown when yearly pricing detected).
+- [x] Plan change preview (upgrade/downgrade delta) + deferred downgrade scheduling UI.
+- [x] Hide tiers with no configured price (catalog filtering now in place).
+- [x] Visual indicator when a downgrade is scheduled (badge + header text using `pending_plan`).
 
 Files to touch
 
@@ -188,15 +194,19 @@ Refs
 
 ## Observability & tests
 
-- [ ] Sentry: add breadcrumbs/tags (user id, plan, price id, invoice id) — no PII.
-- [ ] Metrics: count webhook receipts, duplicates skipped, failures, subscription state transitions.
-  - Added metrics (backend): `stripe.webhook.received`, `stripe.webhook.queued`, `stripe.webhook.duplicate`, `stripe.webhook.invalid_signature`, `stripe.webhook.ignored`, `stripe.checkout.completed`, `stripe.subscription.event`, `stripe.invoice.paid`, `stripe.invoice.failed`, `stripe.invoice.action_required`.
-  - Added Sentry tags on webhook/billing spans: `subscription_status`, `invoice_id`, `price_id`, plus user/plan context without PII.
-- [ ] Tests (minimum):
-  - [x] Webhook de-dup logic (unit tests passing).
-  - [x] subscription.created/updated/deleted → plan mapping (via reconciliation + tests).
-  - [ ] invoice.payment_failed/payment_action_required → state & prompts (backend logs exist; add UI + tests).
-  - [x] Status reconciliation: unknown price → safe default (tests passing).
+- [ ] Sentry: add breadcrumbs/tags (user id, plan, price id, invoice id) — no PII (PARTIAL: subscription, preview, change, dunning/SCA recovery breadcrumbs in place; reconciliation batch start/end summary still TODO).
+- [ ] Metrics: coverage for webhook intake, subscription lifecycle, changes, dunning/SCA funnel, reconciliation.
+  - Present: `stripe.webhook.received`, `stripe.webhook.queued`, `stripe.webhook.duplicate`, `stripe.webhook.invalid_signature`, `stripe.webhook.ignored`, `stripe.checkout.completed`, `stripe.subscription.event`, `stripe.subscription.plan.changed`, `stripe.subscription.preview`, `stripe.subscription.change`, `stripe.subscription.change.error`, `stripe.subscription.downgrade_scheduled`, `stripe.subscription.downgrade.applied`, `stripe.subscription.reconcile.run`, `stripe.invoice.paid`, `stripe.invoice.failed`, `stripe.invoice.action_required`, `stripe.dunning.entered`, `stripe.dunning.recovered`, `stripe.sca.entered`, `stripe.sca.completed`.
+  - Remaining nice-to-have: dunning recovery duration metric (time-to-recover), subscription reconcile error rate alert thresholds, proration invoice line delta metrics.
+- [ ] Tests (minimum & progress):
+  - [x] Webhook de-dup logic.
+  - [x] subscription.created/updated/deleted → plan mapping.
+  - [x] invoice.payment_failed/payment_action_required → UI banners (frontend tests) & backend state update.
+  - [x] Status reconciliation unknown price fallback.
+  - [x] Subscription preview endpoint (upgrade & downgrade + no‑op) (NOTE: confirm no-op test added else add).
+  - [x] Deferred downgrade scheduling sets metadata + cancel_at_period_end.
+  - [x] Reconciliation worker fulfillment test (applies pending downgrade & clears metadata).
+  - [ ] Proration policy deep assertions (interval switch nuance; invoice line item verification).
 
 ---
 
@@ -243,57 +253,102 @@ Refs
 - [x] Webhook de-dup
 - [x] Async queue (Dramatiq offload)
 - [x] Multiple webhook secrets
-- [x] Failure & SCA handlers (backend logging + UI prompts + PM update endpoint)
+- [x] Failure & SCA handlers (backend logging + initial UI prompts; richer UX pending)
 - [x] Pricing via lookup keys
 - [x] Idempotency on create calls
 - [x] Express Checkout wiring (Apple/Google enabling deferred to prod)
 - [ ] Address/Tax readiness
   - Backend persistence + sync complete; enable Address Element & add validation + test.
-- [ ] Plans UI: hide tiers; yearly toggle
+- [x] Plans UI: yearly toggle + preview + schedule downgrade
+- [x] Plans UI: hide tiers with missing prices
+- [x] Plans UI: pending downgrade indicator
 - [x] Color-scheme meta
 - [x] Portal config verified (API supports configuration ID)
 - [ ] Observability + tests (baseline in place; expand)
+  - Added: reconciliation run metrics (`stripe.subscription.reconcile.run`), change error metric, plan change granular tag, SCA/past_due banner tests.
+    - Remaining: proration policy tests, address element test, live key matrix, webhook pruning execution, wallet enablement.
+    - Scheduling: in-process cron loop enabled via `RECONCILE_CRON_ENABLED=true` (worker) with interval envs documented below.
 - [ ] Go-live checks
+- [x] Yearly interval support in backend change endpoint
+- [x] Subscription preview endpoint
+- [x] Deferred downgrade scheduling (metadata + cancel_at_period_end)
+- [x] Pending-plan reconciliation automation (worker actor present; scheduling & monitoring TODO)
 
 ---
 
 ## What’s next (focused plan)
 
-1. Frontend UX for payment recovery and SCA
+1. Schedule & monitor reconciliation (DONE initial)
 
-- Done: Show banners/CTAs when subscription is `past_due` or `requires_action`.
-- Done: Add a “Fix payment” flow using Payment Element on top of existing subscription/invoice.
+- Implemented lightweight in-process cron (env `RECONCILE_CRON_ENABLED=true`); configurable via:
+  - `RECONCILE_CRON_INTERVAL_SECONDS` (default 420)
+  - `RECONCILE_CRON_LOOKAHEAD_SECONDS` (default 900)
+  - `RECONCILE_CRON_BATCH_LIMIT` (default 200)
+- Next: add alerting wiring (outside codebase) for high applied/error counts.
 
-1. Wallets enablement for production
+1. Proration policy docs & tests (PARTIAL)
 
-- Serve over HTTPS and register Apple Pay domain; enable Google Pay per Stripe docs.
+- Added `docs/billing-proration-policy.md` documenting upgrade vs deferred downgrade vs no-op.
+- Tests updated to assert proration_behavior for upgrade and none for deferred downgrade.
+- Remaining: interval switch nuance (monthly->yearly) & explicit invoice line item inspection (future enhancement).
 
-1. Payment method management
+1. Reconciliation fulfillment test (DONE)
 
-- Done: Backend endpoint to update default payment method for a subscription.
-- Done: Dunning banner links to in-app recovery and Portal.
+- Implemented backend test `test_reconciliation_applies_and_clears_metadata` asserting downgrade application clears metadata & unsets cancel.
 
-1. Pricing and plans UI
+1. Failure / SCA UX automation (DONE)
 
-- Hide tiers with no prices; add Yearly toggle when yearly prices exist.
-- Optionally extend catalog to include yearly SKUs.
+- Added frontend `dunning-banner.test.tsx` covering requires_action and past_due banners + onFix handler.
 
-1. Proration policy
+1. Address & Tax UI
 
-- Decide and document proration for upgrades/downgrades; implement consistent behavior.
-  - Proposed: Enable proration for upgrades (immediate access) and credit on downgrades at period end (no immediate refund). Configure via Stripe Dashboard (subscription proration behavior) and enforce in backend upgrade/downgrade endpoints.
-  - Action: Add explicit param `proration_behavior` when modifying subscription (e.g. `create` default, `always_invoice` or `none` as needed). Tests to assert invoice line items reflect proration on upgrade.
+- Integrate Address Element (behind flag); persist & sync; add e2e test when tax flag enabled.
 
-1. Tax/address readiness
+1. Wallet enablement
 
-- Add Address Element; optionally enable `automatic_tax` in subscription create.
+- Register Apple Pay domain (prod HTTPS); enable Apple & Google Pay; conditionally render one‑click buttons.
 
-1. Observability and tests
+1. Webhook pruning execution
 
-- Add Sentry breadcrumbs/tags (user id, plan, price id, invoice id) — no PII.
-- Add metrics counters for webhook events, duplicates, failures, and state transitions.
-- Extend tests for failure/SCA flows and portal paths.
+- Run `scripts/stripe_prune_webhook.py --apply`; store snapshot of final event allowlist in repo.
 
-1. Final go-live checks
+1. Additional observability (partial)
 
-- Switch to live keys, limit webhook events, test upgrade/downgrade/cancel, and verify dunning.
+- Completed: reconciliation run metrics/breadcrumbs; change error metric; granular from->to tag.
+- TODO: SCA funnel metrics (attempt/completed), dunning recovery timing, alert thresholds config.
+
+1. Go-live checklist finalization
+
+- Live keys, portal matrix (new sub, upgrade, downgrade, cancel, past_due, requires_action), rollback/runbook doc.
+
+1. Performance & dunning simulation (optional but valuable)
+
+- Script to simulate invoice failures & recovery to validate alerts + metrics.
+
+Completed since last revision: Added SCA & dunning funnel metrics (`stripe.sca.entered/completed`, `stripe.dunning.entered/recovered`), recovery state updates, refactored webhook handler, expanded metrics list; prior additions (reconcile.run, plan.changed, change.error, fulfillment test, banners) retained.
+
+Readiness summary:
+
+Must-have DONE:
+
+- Verified webhooks (multi-secret, de-dup, async queue).
+- Subscription change + preview + deferred downgrade + reconciliation (scheduled via cron envs).
+- Plan mapping & lifecycle (upgrade/downgrade, cancellation, unpaid handling).
+- Dunning & SCA state persistence + frontend banners + funnel metrics (entered/completed / recovered).
+- Observability baseline (comprehensive metric set; key breadcrumbs).
+
+Remaining BEFORE production (blocking):
+
+1. Execute webhook pruning in live Dashboard; capture allowlist snapshot.
+2. Final proration policy nuances (interval switch) + add invoice line validation test (or explicitly defer & document).
+3. Address Element enablement + test (or explicit decision to defer tax readiness).
+4. Wallet (Apple Pay domain verification + Google Pay) enablement or document deferment.
+5. Go-live runbook execution: live keys, portal matrix QA, rollback rehearsal.
+
+Strongly Recommended (non-blocking but valuable):
+
+- Alerting thresholds (change.error rate, reconcile anomalies, invoice failure %, recovery lag).
+- Dunning recovery duration metric.
+- No-op preview explicit test if missing.
+
+Conclusion: Integration is feature-complete for core subscription management and resilient to common failure/SCA paths. Proceed to operational hardening (pruning, tax/wallet decisions, proration nuance test, alerts) before flipping live keys.

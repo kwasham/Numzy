@@ -8,16 +8,41 @@ Last updated: 2025-08-21
 
 Target set of events (minimally sufficient for subscriptions + Checkout):
 
-- checkout.session.\*
-- customer.subscription.\*
-- invoice.\*
-- customer.\* (created/updated/deleted for hygiene; optional if you don’t rely on customer updates)
+Explicit allowlist we enforce in the pruning script:
+
+- checkout.session.completed
+- customer.subscription.created
+- customer.subscription.updated
+- customer.subscription.deleted
+- invoice.paid (Stripe may still emit legacy paid)
+- invoice.payment_succeeded (newer success event name)
+- invoice.payment_failed
+- invoice.payment_action_required
+- customer.updated (optionally include created/deleted if you depend on them)
 
 Steps:
 
 1. In Stripe Dashboard → Developers → Webhooks → your endpoint.
 2. Click “Select events” and remove everything not listed above.
 3. Save. Deliveries will immediately reflect the narrowed set.
+
+Scripted alternative (preferred for repeatable infra):
+
+```bash
+python -m backend.scripts.stripe_prune_webhooks \
+	--endpoint we_123456789 \
+	--print-diff --audit-json webhook_audit.json   # dry-run by default
+
+# Review DIFF_JSON line + webhook_audit.json snapshot, then apply:
+python -m backend.scripts.stripe_prune_webhooks \
+	--endpoint we_123456789 --apply --print-diff --audit-json webhook_audit_post.json
+```
+
+Flags:
+
+- `--print-diff` emits a single-line JSON (prefixed DIFF_JSON:) suitable for logging / CI capture.
+- `--audit-json` writes the before/target snapshot for change review / PR artifact.
+- Omit `--apply` for dry-run safety.
 
 Safety net on backend:
 

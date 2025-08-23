@@ -280,30 +280,40 @@ async def create_billing_portal_session(
 
 @router.post("/subscription/change")
 async def change_subscription_plan(
-    target_plan: str = Body(..., embed=True),
-    proration_behavior: str | None = Body(None, embed=True),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    user: User = Depends(get_user),
-    db: AsyncSession = Depends(get_db),
+        target_plan: str = Body(..., embed=True),
+        interval: str | None = Body(None, embed=True),
+        proration_behavior: str | None = Body(None, embed=True),
+        defer_downgrade: bool | None = Body(None, embed=True),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        user: User = Depends(get_user),
+        db: AsyncSession = Depends(get_db),
 ):
     """Change the active subscription's plan (upgrade or downgrade) with explicit proration policy.
 
-    Policy (documented in Stripe_Checklist):
-    - Upgrades: immediate proration invoice (credit unused portion, bill difference) => proration_behavior=create_invoice
-    - Downgrades: defer change until period end => proration_behavior=none + schedule via subscription schedule (simplified here by setting at_period_end flag)
-    If no active subscription found, returns 404.
+    Enhancements:
+    - Supports monthly or yearly (interval) mapping (yearly prices optional / environment driven).
+    - Provides optional defer_downgrade flag: when True and this is a downgrade, we avoid immediate price swap
+      and instead set `cancel_at_period_end=True` so the customer stays on the higher tier until renewal, while
+      storing a hint via metadata for reconciliation workers to apply new plan post-period.
+    - If proration_behavior not provided we auto-select: upgrades => create_invoice, downgrades => none.
+    - NOTE: True scheduling via Subscription Schedules could be implemented later; for now we emulate via
+      cancel_at_period_end semantics plus metadata marker `pending_plan`.
     """
+    
     if stripe is None:
         raise HTTPException(status_code=500, detail="Stripe not configured")
     if not settings.STRIPE_API_KEY:
         raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
     stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
 
-    # Normalize plan
+    # Normalize plan & interval
     plan_lower = target_plan.lower()
     valid_plans = {"personal", "pro", "business"}
     if plan_lower not in valid_plans:
         raise HTTPException(status_code=400, detail="Unsupported target_plan")
+    if interval is not None and interval not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="Invalid interval; must be monthly or yearly")
+    chosen_interval = interval or "monthly"
 
     customer_id = getattr(user, "stripe_customer_id", None)
     if not customer_id:
@@ -326,13 +336,229 @@ async def change_subscription_plan(
     current_item = (current_sub.get("items", {}).get("data", []) or [None])[0] if isinstance(current_sub, dict) else None
     current_price_id = current_item and current_item.get("price", {}).get("id")
 
-    # Map target plan -> price id (monthly only for now; yearly handled via checkout flow)
+    # Map plan + interval -> price id (fall back to monthly when yearly not configured)
     plan_to_price = {
-        "personal": settings.STRIPE_PRICE_PERSONAL_MONTHLY,
-        "pro": settings.STRIPE_PRICE_PRO_MONTHLY,
-        "business": settings.STRIPE_PRICE_BUSINESS_MONTHLY,
+        ("personal", "monthly"): getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+        ("personal", "yearly"): getattr(settings, "STRIPE_PRICE_PERSONAL_YEARLY", None),
+        ("pro", "monthly"): getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+        ("pro", "yearly"): getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+        ("business", "monthly"): getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+        ("business", "yearly"): getattr(settings, "STRIPE_PRICE_BUSINESS_YEARLY", None),
     }
-    new_price_id = plan_to_price.get(plan_lower)
+    new_price_id = plan_to_price.get((plan_lower, chosen_interval)) or plan_to_price.get((plan_lower, "monthly"))
+    if not new_price_id:
+        raise HTTPException(status_code=400, detail="Price not configured for target plan")
+    if new_price_id == current_price_id:
+        return {"ok": True, "unchanged": True, "subscription_id": current_sub.get("id")}
+
+    # Infer upgrade vs downgrade. Normalize yearly amounts to monthly equivalent for comparison
+    # so an interval switch monthly->yearly (with discount) does not appear as a massive upgrade.
+    def _price_info(price_id):
+        try:
+            pr = stripe.Price.retrieve(price_id)  # type: ignore
+            unit_amount = pr.get("unit_amount") or 0
+            recurring = pr.get("recurring") or {}
+            interval = recurring.get("interval")  # 'month' | 'year' | None
+            interval_count = recurring.get("interval_count") or 1
+            return unit_amount, interval, interval_count
+        except Exception:
+            return 0, None, 1
+
+    cur_amount_raw, cur_interval, cur_interval_count = _price_info(current_price_id) if current_price_id else (0, None, 1)
+    new_amount_raw, new_interval, new_interval_count = _price_info(new_price_id)
+
+    def _normalized(unit_amount, interval, interval_count):
+        # Normalize to monthly amount in cents for fair comparison
+        if interval == "year":
+            # Divide by 12 * interval_count (usually 1) to get per-month equivalent
+            return unit_amount / (12 * (interval_count or 1))
+        if interval == "month":
+            return unit_amount / (interval_count or 1)
+        return unit_amount  # fallback
+
+    current_amount_norm = _normalized(cur_amount_raw, cur_interval, cur_interval_count)
+    new_amount_norm = _normalized(new_amount_raw, new_interval, new_interval_count)
+    is_upgrade = new_amount_norm > current_amount_norm
+
+    # Decide proration behavior
+    if proration_behavior and proration_behavior not in {"create_invoice", "none"}:
+        raise HTTPException(status_code=400, detail="Invalid proration_behavior")
+    effective_behavior = proration_behavior or ("create_invoice" if is_upgrade else "none")
+
+    sub_id = current_sub.get("id")
+    request_opts = {}
+    if idempotency_key:
+        request_opts["idempotency_key"] = idempotency_key
+
+    try:
+        pending_plan = None
+        metadata_update = {}
+        downgrade_scheduled = False
+        # Detect same-plan interval switch (e.g., pro monthly -> pro yearly) to force immediate price swap
+        user_current_plan = getattr(user, "plan", None)
+        current_plan_name = None
+        try:
+            if user_current_plan is not None:
+                current_plan_name = user_current_plan.value.lower()
+        except Exception:
+            current_plan_name = None
+        same_plan_interval_switch = current_plan_name == plan_lower and current_price_id != new_price_id
+
+        if (not same_plan_interval_switch
+                and not is_upgrade
+                and effective_behavior == "none"
+                and (defer_downgrade or defer_downgrade is None)):
+            pending_plan = plan_lower
+            metadata_update["pending_plan"] = pending_plan
+            downgrade_scheduled = True
+            updated = stripe.Subscription.modify(  # type: ignore
+                sub_id,
+                cancel_at_period_end=True,
+                metadata={**(current_sub.get("metadata") or {}), **metadata_update},
+                **request_opts,
+            )
+        else:
+            updated = stripe.Subscription.modify(  # type: ignore
+                sub_id,
+                items=[{"id": current_item.get("id"), "price": new_price_id}],
+                proration_behavior=("create_invoice" if is_upgrade else "none"),
+                cancel_at_period_end=False,
+                metadata={**(current_sub.get("metadata") or {}), **metadata_update},
+                **request_opts,
+            )
+    except Exception as e:  # pragma: no cover
+        logger.exception("Failed to modify subscription %s: %s", sub_id, e)
+        try:
+            sentry_metric_inc(
+                "stripe.subscription.change.error",
+                tags={
+                    "plan": plan_lower,
+                    "interval": chosen_interval,
+                    "upgrade": str(is_upgrade).lower(),
+                },
+            )
+            sentry_breadcrumb(
+                category="stripe",
+                message="subscription.change.error",
+                data={
+                    "subscription_id": sub_id,
+                    "from_price": current_price_id,
+                    "to_price": new_price_id,
+                    "error": str(e),
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Failed to change plan")
+
+    # Update local plan optimistically (webhooks will reconcile authoritative state)
+    try:
+        if plan_lower == "personal":
+            user.plan = PlanType.PERSONAL  # type: ignore
+        elif plan_lower == "pro":
+            user.plan = PlanType.PRO  # type: ignore
+        elif plan_lower == "business":
+            user.plan = PlanType.BUSINESS
+        await db.commit()
+    except Exception:  # pragma: no cover
+        await db.rollback()
+
+    # Observability
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="subscription.plan.changed",
+            data={
+                "subscription_id": sub_id,
+                "from_price": current_price_id,
+                "to_price": new_price_id,
+                "is_upgrade": is_upgrade,
+                "proration_behavior": effective_behavior,
+                "deferred": bool(not is_upgrade and effective_behavior == "none" and (defer_downgrade or defer_downgrade is None)),
+            },
+        )
+        sentry_metric_inc(
+            "stripe.subscription.plan.changed",
+            tags={
+                "upgrade": str(is_upgrade).lower(),
+                "proration": effective_behavior,
+                "plan": plan_lower,
+                "from_to": f"{current_price_id or 'none'}->{new_price_id}",
+            },
+        )
+        sentry_metric_inc(
+            "stripe.subscription.change",
+            tags={
+                "upgrade": str(is_upgrade).lower(),
+                "plan": plan_lower,
+                "interval": chosen_interval,
+                "deferred": str(not is_upgrade and effective_behavior == "none" and (defer_downgrade or defer_downgrade is None)).lower(),
+            },
+        )
+        if locals().get('downgrade_scheduled'):
+            sentry_metric_inc(
+                "stripe.subscription.downgrade_scheduled",
+                tags={"plan": plan_lower, "interval": chosen_interval},
+            )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "subscription_id": sub_id,
+        "plan": plan_lower,
+        "interval": chosen_interval,
+        "upgrade": is_upgrade,
+        "proration_behavior": effective_behavior,
+        "deferred": bool(not is_upgrade and effective_behavior == "none" and (defer_downgrade or defer_downgrade is None)),
+        "stripe_status": updated.get("status") if isinstance(updated, dict) else None,
+    }
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    # Normalize plan & interval
+    plan_lower = target_plan.lower()
+    valid_plans = {"personal", "pro", "business"}
+    if plan_lower not in valid_plans:
+        raise HTTPException(status_code=400, detail="Unsupported target_plan")
+    if interval is not None and interval not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="Invalid interval; must be monthly or yearly")
+    chosen_interval = interval or "monthly"
+
+    customer_id = getattr(user, "stripe_customer_id", None)
+    if not customer_id:
+        raise HTTPException(status_code=404, detail="No Stripe customer")
+
+    # Fetch current subscription
+    try:
+        subs = stripe.Subscription.list(customer=customer_id, status="all", limit=2)  # type: ignore
+        sub_list = subs.get("data", []) if isinstance(subs, dict) else []
+        if not sub_list:
+            raise HTTPException(status_code=404, detail="No active subscription")
+        current_sub = sub_list[0]
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover
+        logger.exception("Failed to fetch subscriptions for change: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to load subscription")
+
+    # Determine current plan price id
+    current_item = (current_sub.get("items", {}).get("data", []) or [None])[0] if isinstance(current_sub, dict) else None
+    current_price_id = current_item and current_item.get("price", {}).get("id")
+
+    # Map plan + interval -> price id (fall back to monthly when yearly not configured)
+    plan_to_price = {
+        ("personal", "monthly"): getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+        ("personal", "yearly"): getattr(settings, "STRIPE_PRICE_PERSONAL_YEARLY", None),
+        ("pro", "monthly"): getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+        ("pro", "yearly"): getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+        ("business", "monthly"): getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+        ("business", "yearly"): getattr(settings, "STRIPE_PRICE_BUSINESS_YEARLY", None),
+    }
+    new_price_id = plan_to_price.get((plan_lower, chosen_interval)) or plan_to_price.get((plan_lower, "monthly"))
     if not new_price_id:
         raise HTTPException(status_code=400, detail="Price not configured for target plan")
     if new_price_id == current_price_id:
@@ -363,21 +589,26 @@ async def change_subscription_plan(
         request_opts["idempotency_key"] = idempotency_key
 
     try:
-        if not is_upgrade and effective_behavior == "none":
-            # Downgrade: schedule for period end by updating subscription with cancel_at_period_end like semantics.
-            # Simpler: set a pending update via subscription schedule is overkill; we mimic by updating at period end flag and returning instructions.
+        pending_plan = None
+        metadata_update = {}
+        if not is_upgrade and effective_behavior == "none" and (defer_downgrade or defer_downgrade is None):
+            # Defer downgrade: keep current price until renewal, set cancel_at_period_end=True + mark pending plan
+            pending_plan = plan_lower
+            metadata_update["pending_plan"] = pending_plan
             updated = stripe.Subscription.modify(  # type: ignore
                 sub_id,
-                items=[{"id": current_item.get("id"), "price": new_price_id}],
-                proration_behavior="none",
+                cancel_at_period_end=True,
+                metadata={**(current_sub.get("metadata") or {}), **metadata_update},
                 **request_opts,
             )
         else:
-            # Upgrade (or forced proration): invoice immediately for difference
+            # Immediate application (upgrade or forced immediate downgrade)
             updated = stripe.Subscription.modify(  # type: ignore
                 sub_id,
                 items=[{"id": current_item.get("id"), "price": new_price_id}],
-                proration_behavior="create_invoice",
+                proration_behavior=("create_invoice" if is_upgrade else "none"),
+                cancel_at_period_end=False,
+                metadata={**(current_sub.get("metadata") or {}), **metadata_update},
                 **request_opts,
             )
     except Exception as e:  # pragma: no cover
@@ -391,7 +622,7 @@ async def change_subscription_plan(
         elif plan_lower == "pro":
             user.plan = PlanType.PRO  # type: ignore
         elif plan_lower == "business":
-            user.plan = PlanType.TEAM  # mapping to existing enum naming
+            user.plan = PlanType.BUSINESS
         await db.commit()
     except Exception:  # pragma: no cover
         await db.rollback()
@@ -424,9 +655,106 @@ async def change_subscription_plan(
         "ok": True,
         "subscription_id": sub_id,
         "plan": plan_lower,
+        "interval": chosen_interval,
         "upgrade": is_upgrade,
         "proration_behavior": effective_behavior,
+        "deferred": bool(not is_upgrade and effective_behavior == "none" and (defer_downgrade or defer_downgrade is None)),
         "stripe_status": updated.get("status") if isinstance(updated, dict) else None,
+    }
+
+
+@router.post("/subscription/preview")
+async def preview_subscription_change(
+    target_plan: str = Body(..., embed=True),
+    interval: str | None = Body(None, embed=True),
+    user: User = Depends(get_user),
+):
+    """Preview financial impact of changing to a target plan & interval.
+
+    Returns: { current_amount, new_amount, difference, is_upgrade, currency, interval }
+    Falls back gracefully if Stripe errors; values may be zero in failure cases.
+    """
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_API_KEY")
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    plan_lower = target_plan.lower()
+    if plan_lower not in {"personal", "pro", "business"}:
+        raise HTTPException(status_code=400, detail="Unsupported target_plan")
+    if interval is not None and interval not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="Invalid interval")
+    chosen_interval = interval or "monthly"
+
+    customer_id = getattr(user, "stripe_customer_id", None)
+    if not customer_id:
+        raise HTTPException(status_code=404, detail="No Stripe customer")
+    try:
+        subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)  # type: ignore
+        sub_list = subs.get("data", []) if isinstance(subs, dict) else []
+        current_sub = sub_list[0] if sub_list else None
+    except Exception:
+        current_sub = None
+    current_item = (current_sub.get("items", {}).get("data", []) or [None])[0] if isinstance(current_sub, dict) else None
+    current_price_id = current_item and current_item.get("price", {}).get("id")
+
+    plan_to_price = {
+        ("personal", "monthly"): getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+        ("personal", "yearly"): getattr(settings, "STRIPE_PRICE_PERSONAL_YEARLY", None),
+        ("pro", "monthly"): getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+        ("pro", "yearly"): getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+        ("business", "monthly"): getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+        ("business", "yearly"): getattr(settings, "STRIPE_PRICE_BUSINESS_YEARLY", None),
+    }
+    new_price_id = plan_to_price.get((plan_lower, chosen_interval)) or plan_to_price.get((plan_lower, "monthly"))
+    if not new_price_id:
+        raise HTTPException(status_code=400, detail="Price not configured for target plan")
+
+    def _amt(price_id: str | None):
+        if not price_id:
+            return 0, "USD"
+        try:
+            pr = stripe.Price.retrieve(price_id)  # type: ignore
+            return (pr.get("unit_amount") or 0) / 100.0, (pr.get("currency") or "usd").upper()
+        except Exception:
+            return 0, "USD"
+
+    cur_amount, cur_currency = _amt(current_price_id)
+    new_amount, new_currency = _amt(new_price_id)
+    currency = new_currency or cur_currency
+    difference = round(new_amount - cur_amount, 2)
+    is_upgrade = difference > 0
+    try:
+        sentry_breadcrumb(
+            category="stripe",
+            message="subscription.preview",
+            data={
+                "from_price_id": current_price_id,
+                "to_price_id": new_price_id,
+                "difference": difference,
+                "upgrade": is_upgrade,
+                "plan": plan_lower,
+                "interval": chosen_interval,
+            },
+        )
+        sentry_metric_inc(
+            "stripe.subscription.preview",
+            tags={
+                "plan": plan_lower,
+                "interval": chosen_interval,
+                "upgrade": str(is_upgrade).lower(),
+            },
+        )
+    except Exception:
+        pass
+    return {
+        "current_amount": cur_amount,
+        "new_amount": new_amount,
+        "difference": difference,
+        "is_upgrade": is_upgrade,
+        "currency": currency,
+        "interval": chosen_interval,
     }
 
 
@@ -519,6 +847,8 @@ async def get_billing_status(
                     "status": sub.get("status"),
                     "price_id": price_id,
                     "current_period_end": period_end,
+                    "pending_plan": (sub.get("metadata", {}) or {}).get("pending_plan"),
+                    "cancel_at_period_end": sub.get("cancel_at_period_end"),
                 }
         except Exception as e:  # pragma: no cover
             logger.warning("Stripe subscription lookup failed for customer %s: %s", customer_id, e)
