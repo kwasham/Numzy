@@ -10,9 +10,22 @@ import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 
 import { Plan } from "./plan";
-import { PLAN_FEATURES, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta } from "./pricing-config";
+import { generatePlanFeatures, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta, RAW_PRICING } from "./pricing-config";
+
+// Lazy Sentry import (avoid SSR issues)
+// Lightweight Sentry shim (frontend instrumentation) - avoids dynamic import lint noise
+const sentry = (typeof globalThis !== "undefined" && (globalThis.Sentry || globalThis.__SENTRY__)) || null;
 
 export function PlansTable() {
+	// Determine if any paid plan exposes a discount to enable yearly toggle
+	const discountEligible = React.useMemo(
+		() =>
+			PLAN_ORDER.some((id) => {
+				const meta = priceMeta(id);
+				return meta.discountPercent && meta.discountPercent > 0 && meta.monthly > 0;
+			}),
+		[]
+	);
 	const [yearly, setYearly] = React.useState(false);
 	const [selectedPlan, setSelectedPlan] = React.useState(null);
 
@@ -27,9 +40,18 @@ export function PlansTable() {
 			/* ignore */
 		}
 	}, []);
+	// Hide custom priced tiers (monthly 0) except free
+	const ids = React.useMemo(
+		() =>
+			PLAN_ORDER.filter((id) => {
+				if (id === "free") return true;
+				const p = RAW_PRICING[id];
+				return p && p.monthly > 0;
+			}),
+		[]
+	);
 	// Monthly vs. yearly (displayed as discounted monthly equivalent) pricing
 	const periodLabel = yearly ? "/year" : "/month";
-	const ids = PLAN_ORDER;
 	const currency = "USD";
 	const structuredOffers = ids.map((id) => {
 		const meta = priceMeta(id);
@@ -43,30 +65,40 @@ export function PlansTable() {
 		};
 	});
 
-	// impression tracking
+	// Debounced impression tracking: dispatch impressions after short delay to avoid spamming.
 	React.useEffect(() => {
 		const cards = document.querySelectorAll('[data-pricing-card="true"]');
 		if (!("IntersectionObserver" in globalThis)) return;
+		const pending = new Map(); // element -> timeout id
 		const observer = new IntersectionObserver(
 			(entries) => {
 				for (const e of entries) {
-					if (e.isIntersecting) {
+					if (e.isIntersecting && !pending.has(e.target)) {
 						const plan = e.target.dataset.plan;
-						globalThis.dispatchEvent(new CustomEvent("pricing:impression", { detail: { plan } }));
-						observer.unobserve(e.target);
+						const tid = setTimeout(() => {
+							globalThis.dispatchEvent(new CustomEvent("pricing:impression", { detail: { plan } }));
+							observer.unobserve(e.target);
+							pending.delete(e.target);
+						}, 60); // 60ms debounce window
+						pending.set(e.target, tid);
 					}
 				}
 			},
 			{ threshold: 0.4 }
 		);
 		for (const c of cards) observer.observe(c);
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			for (const tid of pending.values()) clearTimeout(tid);
+			pending.clear();
+		};
 	}, []);
 
 	// feature delta map
 	const accumulated = new Set();
 	const featureDeltaMap = ids.reduce((acc, id) => {
-		const feats = PLAN_FEATURES[id];
+		// dynamically generate features (quota pluralization etc.)
+		const feats = generatePlanFeatures(id);
 		acc[id] = feats.map((f) => ({ name: f, isNew: !accumulated.has(f) && f !== "—" }));
 		for (const f of feats) accumulated.add(f);
 		return acc;
@@ -88,15 +120,24 @@ export function PlansTable() {
 							spacing={2}
 							sx={{ alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}
 						>
-							<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-								<Switch
-									checked={yearly}
-									onChange={() => setYearly((p) => !p)}
-									inputProps={{ "aria-label": "Toggle annual billing" }}
-								/>
-								<Typography variant="body1">Billed annually</Typography>
-								{yearly && <Chip color="success" label="Save" size="small" />}
-							</Stack>
+							{discountEligible ? (
+								<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+									<Switch
+										checked={yearly}
+										onChange={() => {
+											setYearly((p) => !p);
+											try {
+												sentry?.captureMessage("pricing.toggle_yearly", { level: "info" });
+											} catch {
+												// ignore
+											}
+										}}
+										inputProps={{ "aria-label": "Toggle annual billing" }}
+									/>
+									<Typography variant="body1">Billed annually</Typography>
+									{yearly && <Chip color="success" label="Save" size="small" />}
+								</Stack>
+							) : null}
 						</Stack>
 					</Stack>
 					<div>
@@ -146,6 +187,9 @@ export function PlansTable() {
 								);
 							})}
 						</Grid>
+						<Typography color="text.secondary" component="p" sx={{ textAlign: "center", mt: 2 }} variant="caption">
+							* denotes feature first introduced at that tier
+						</Typography>
 					</div>
 					<div>
 						<Typography color="text.secondary" component="p" sx={{ textAlign: "center" }} variant="caption">

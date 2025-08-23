@@ -96,10 +96,12 @@ export default function SubscribePage() {
 			mql.addEventListener("change", handler);
 			return () => mql.removeEventListener("change", handler);
 		} catch {
-			// Safari fallback
-			// @ts-expect-error legacy Safari
+			// Safari legacy fallback (addListener is deprecated but present in older Safari)
+			// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+			// @ts-ignore
 			mql.addListener(handler);
-			// @ts-expect-error legacy Safari
+			// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+			// @ts-ignore
 			return () => mql.removeListener(handler);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps

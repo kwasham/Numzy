@@ -281,6 +281,8 @@ Refs
 1. Proration policy
 
 - Decide and document proration for upgrades/downgrades; implement consistent behavior.
+  - Proposed: Enable proration for upgrades (immediate access) and credit on downgrades at period end (no immediate refund). Configure via Stripe Dashboard (subscription proration behavior) and enforce in backend upgrade/downgrade endpoints.
+  - Action: Add explicit param `proration_behavior` when modifying subscription (e.g. `create` default, `always_invoice` or `none` as needed). Tests to assert invoice line items reflect proration on upgrade.
 
 1. Tax/address readiness
 

@@ -47,6 +47,10 @@ class User(Base):
     stripe_customer_id = Column(String, unique=True, nullable=True)
     name = Column(String, nullable=False)
     plan = Column(Enum(PlanType), nullable=False, default=PlanType.FREE)
+    # Subscription/payment tracking (denormalized for fast UX prompts)
+    subscription_status = Column(String, nullable=True, index=True)
+    last_invoice_status = Column(String, nullable=True)
+    payment_state = Column(String, nullable=True, index=True)  # ok, past_due, requires_action
     # Billing address fields (optional, for tax readiness). Stored without PII beyond city/country/line/zip.
     billing_address_line1 = Column(String, nullable=True)
     billing_address_line2 = Column(String, nullable=True)

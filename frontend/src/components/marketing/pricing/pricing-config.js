@@ -1,246 +1,153 @@
-// // Central pricing config & helpers
-// // Can later be replaced with dynamic fetch from backend
+// Pricing configuration now derives from shared catalog (single source of truth)
+// Shared module path: ../../../../../shared/pricing/catalog.js (outside frontend package)
+// Importing via relative path; Next.js transpiles it.
+import { PRICING_CATALOG } from "../../../../../shared/pricing/catalog";
 
-// export const RAW_PRICING = {
-// 	free: { monthly: 0, discount: 0 },
-// 	personal: { monthly: 9.99, discount: 0.167 }, // 16.7% off annual
-// 	pro: { monthly: 29, discount: 0.167 },
-// 	business: { monthly: 99, discount: 0.167 },
-// };
-
-// export function annualTotal({ monthly, discount }) {
-// 	const base = monthly * 12;
-// 	const total = base * (1 - discount);
-// 	return roundCurrency(total);
-// }
-
-// export function equivalentMonthlyFromAnnual({ monthly, discount }) {
-// 	const total = annualTotal({ monthly, discount });
-// 	return roundCurrency(total / 12);
-// }
-
-// export function planPrice(id, opts) {
-// 	const yearly = opts?.yearly || false;
-// 	const entry = RAW_PRICING[id];
-// 	if (!entry) return 0;
-// 	if (yearly) return annualTotal(entry);
-// 	return entry.monthly;
-// }
-
-// export function discountPercent(id) {
-// 	const entry = RAW_PRICING[id];
-// 	if (!entry) return 0;
-// 	return Math.round(entry.discount * 100);
-// }
-
-// export function priceMeta(id) {
-// 	const entry = RAW_PRICING[id];
-// 	if (!entry) return {};
-// 	return {
-// 		monthly: entry.monthly,
-// 		annual: annualTotal(entry),
-// 		annualMonthly: equivalentMonthlyFromAnnual(entry),
-// 		discountPercent: discountPercent(id),
-// 	};
-// }
-
-// function roundCurrency(v) {
-// 	return Math.round((v + Number.EPSILON) * 100) / 100;
-// }
-
-// export const PLAN_FEATURES = {
-// 	free: ["25 monthly quota", "Retention: 30d", "Community support", "Basic analytics", "—"],
-// 	personal: ["100 monthly quota", "Retention: 180d", "Community support", "Basic analytics", "—"],
-// 	pro: ["500 monthly quota", "Retention: 365d", "Priority support", "Advanced analytics", "—"],
-// 	business: ["5000 monthly quota", "Retention: Custom", "Priority support", "Advanced analytics", "SSO/SAML"],
-// };
-
-// // Feature descriptions for tooltips
-// export const FEATURE_DETAILS = {
-// 	"Retention: 30d": "Your data is retained for 30 days.",
-// 	"Retention: 180d": "Data retained for 6 months.",
-// 	"Retention: 365d": "Data retained for 12 months.",
-// 	"Retention: Custom": "Custom retention period negotiable on Business tier.",
-// 	"Community support": "Best-effort community & forum assistance.",
-// 	"Priority support": "Expedited responses with SLA targets.",
-// 	"Basic analytics": "Core usage dashboards.",
-// 	"Advanced analytics": "Drill-down & export capabilities.",
-// 	SSO: "Single Sign-On via SAML/OIDC.",
-// 	"SSO/SAML": "Enterprise SSO & SAML integration.",
-// };
-
-// export const PLAN_METADATA = {
-// 	free: { name: "Free", description: "Free tier", recommended: false },
-// 	personal: { name: "Personal", description: "Personal tier", recommended: false },
-// 	pro: { name: "Pro", description: "Pro tier", recommended: true },
-// 	business: { name: "Business", description: "Business tier", recommended: false },
-// };
-
-// export const PLAN_ORDER = ["free", "personal", "pro", "business"];
-
-// // Simple client-side currency conversion (display only, base USD)
-// export const BASE_CURRENCY = "USD";
-// export const CURRENCY_RATES = {
-// 	USD: 1,
-// 	EUR: 0.9,
-// };
-
-// export function convertPriceUSD(valueUSD, targetCurrency) {
-// 	const rate = CURRENCY_RATES[targetCurrency] || 1;
-// 	return roundCurrency(valueUSD * rate);
-// }
-
-// Refactored pricing configuration aligned with updated pricing tiers
-
-// Central pricing config & helpers
-// These values reflect a four‑tier pricing structure with a new Enterprise plan.
-
-export const RAW_PRICING = {
-    free: { monthly: 0, discount: 0 },
-    // Personal plan aimed at individuals and solo entrepreneurs. 9.99/month with ~16.7% annual discount.
-    personal: { monthly: 9.99, discount: 0.167 },
-    // Pro plan designed for small teams. The monthly price has been reduced from 29 to 19.99.
-    pro: { monthly: 19.99, discount: 0.167 },
-    // Business plan targeted at mid‑size organizations. Price lowered to 49.99 to align with market.
-    business: { monthly: 49.99, discount: 0.167 },
-    // Enterprise plan supports custom pricing; set monthly to 0 to signal that pricing is negotiated.
-    enterprise: { monthly: 0, discount: 0 },
-};
+// Backwards compatible shape for existing helpers
+export const RAW_PRICING = Object.fromEntries(
+	Object.entries(PRICING_CATALOG).map(([id, v]) => [id, { monthly: v.monthly, discount: v.discount }])
+);
 
 export function annualTotal({ monthly, discount }) {
-    const base = monthly * 12;
-    const total = base * (1 - discount);
-    return roundCurrency(total);
+	const base = monthly * 12;
+	const total = base * (1 - discount);
+	return roundCurrency(total);
 }
 
 export function equivalentMonthlyFromAnnual({ monthly, discount }) {
-    const total = annualTotal({ monthly, discount });
-    return roundCurrency(total / 12);
+	const total = annualTotal({ monthly, discount });
+	return roundCurrency(total / 12);
 }
 
 export function planPrice(id, opts) {
-    const yearly = opts?.yearly || false;
-    const entry = RAW_PRICING[id];
-    if (!entry) return 0;
-    if (yearly) return annualTotal(entry);
-    return entry.monthly;
+	const yearly = opts?.yearly || false;
+	const entry = RAW_PRICING[id];
+	if (!entry) return 0;
+	if (yearly) return annualTotal(entry);
+	return entry.monthly;
 }
 
 export function discountPercent(id) {
-    const entry = RAW_PRICING[id];
-    if (!entry) return 0;
-    return Math.round(entry.discount * 100);
+	const entry = RAW_PRICING[id];
+	if (!entry) return 0;
+	return Math.round(entry.discount * 100);
 }
 
 export function priceMeta(id) {
-    const entry = RAW_PRICING[id];
-    if (!entry) return {};
-    return {
-        monthly: entry.monthly,
-        annual: annualTotal(entry),
-        annualMonthly: equivalentMonthlyFromAnnual(entry),
-        discountPercent: discountPercent(id),
-    };
+	const entry = RAW_PRICING[id];
+	if (!entry) return {};
+	return {
+		monthly: entry.monthly,
+		annual: annualTotal(entry),
+		annualMonthly: equivalentMonthlyFromAnnual(entry),
+		discountPercent: discountPercent(id),
+	};
 }
 
 function roundCurrency(v) {
-    return Math.round((v + Number.EPSILON) * 100) / 100;
+	return Math.round((v + Number.EPSILON) * 100) / 100;
 }
 
 // Plan features have been expanded to clearly communicate quota, retention policy and key capabilities.
-export const PLAN_FEATURES = {
-    free: [
-        "25 monthly quota",
-        "Retention: 30d",
-        "Community support",
-        "Basic analytics",
-        "—",
-    ],
-    personal: [
-        "100 monthly quota",
-        "Retention: 3y",
-        "Community support",
-        "Basic analytics",
-        "PDF/CSV export",
-    ],
-    pro: [
-        "500 monthly quota per user",
-        "Retention: 7y",
-        "Priority support",
-        "Advanced analytics",
-        "Integrations",
-    ],
-    business: [
-        "Unlimited monthly quota",
-        "Retention: 7y+",
-        "Priority support",
-        "Advanced analytics",
-        "SSO/SAML & API",
-    ],
-    enterprise: [
-        "Unlimited quota",
-        "Retention: Custom",
-        "Dedicated support",
-        "Custom AI & on‑prem options",
-        "SSO/SAML & API",
-    ],
-};
+export const PLAN_FEATURES = Object.fromEntries(Object.entries(PRICING_CATALOG).map(([id, v]) => [id, v.features]));
+
+// Quota definitions (single source of truth for first feature line formatting)
+// This enables consistent pluralization & large number formatting without hardcoding
+// strings directly in PLAN_FEATURES. We still keep the original first string in
+// PLAN_FEATURES for backward compatibility & tests; generatePlanFeatures() will
+// re-format it dynamically using these values so future changes only update this map.
+// Fields:
+// - limit: numeric upper bound
+// - perUser: whether the quota is per user
+// - unlimited: boolean for unlimited tiers
+// - custom: indicates custom / negotiated terms (enterprise)
+export const PLAN_QUOTAS = Object.fromEntries(Object.entries(PRICING_CATALOG).map(([id, v]) => [id, v.quota]));
+
+// Format a numeric quantity with optional compact notation (e.g. 1,200 -> 1.2K)
+function formatNumber(value) {
+	if (value >= 1000) {
+		// Use Intl with compact if supported; fallback to manual K/M formatting.
+		try {
+			return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+		} catch {
+			if (value < 1_000_000) return (value / 1000).toFixed(value % 1000 === 0 ? 0 : 1) + "K";
+			return (value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1) + "M";
+		}
+	}
+	return value.toString();
+}
+
+// Public helper: format receipt quota with proper singular/plural & modifiers.
+export function formatReceiptQuota({ limit, perUser, unlimited, custom }) {
+	if (unlimited) {
+		if (custom) return "Unlimited receipts (custom SLA)"; // enterprise wording
+		return "Unlimited receipts / month"; // business wording
+	}
+	if (limit == null) return "—";
+	const num = formatNumber(limit);
+	const singular = limit === 1;
+	// When compact notation yields e.g. "1K" we always use plural form.
+	const unit = singular && !/[^0-9]/.test(num) ? "receipt" : "receipts";
+	return `Process up to ${num} ${unit} ${perUser ? "/ user " : "/ "}month`;
+}
+
+// Generate full feature list for a plan, replacing first quota line with
+// dynamically formatted version (keeping rest intact). Falls back gracefully
+// if PLAN_FEATURES does not contain any features or quota map missing.
+export function generatePlanFeatures(id) {
+	const base = PLAN_FEATURES[id] || [];
+	if (base.length === 0) return base;
+	const quota = PLAN_QUOTAS[id];
+	if (!quota) return base; // no dynamic override
+	const formatted = formatReceiptQuota(quota);
+	// Replace only if different to avoid altering feature delta logic unnecessarily.
+	const updated = [formatted, ...base.slice(1)];
+	return updated;
+}
 
 // Detailed descriptions for each feature; these strings appear in tooltips.
 export const FEATURE_DETAILS = {
-    "Retention: 30d": "Your data is retained for 30 days.",
-    "Retention: 3y": "Data retained for 3 years, matching IRS general record‑keeping guidance.",
-    "Retention: 7y": "Data retained for 7 years, suitable for standard business document retention.",
-    "Retention: 7y+": "Data retained for 7 years or longer as needed.",
-    "Retention: Custom": "Retention period negotiable for Enterprise customers.",
-    "Community support": "Best‑effort community & forum assistance.",
-    "Priority support": "Expedited responses with SLA targets.",
-    "Dedicated support": "Dedicated account manager and priority assistance.",
-    "Basic analytics": "Core usage dashboards.",
-    "Advanced analytics": "Drill‑down reports, exports and trend analysis.",
-    "PDF/CSV export": "Export your data in PDF or CSV formats for tax preparation.",
-    Integrations: "Integrate with accounting software, Slack/Teams and other tools.",
-    "SSO/SAML & API": "Enterprise Single Sign‑On and public API access.",
-    "Custom AI & on‑prem options": "Customize models and deploy on your own infrastructure.",
+	"Process up to 25 receipts / month": "Monthly receipt processing capacity for the Free plan.",
+	"Process up to 100 receipts / month": "Monthly receipt processing capacity for the Personal plan.",
+	"Process up to 500 receipts / user / month": "Per-user monthly receipt volume for Pro teams.",
+	"Unlimited receipts / month": "No fixed monthly receipt cap; fair use policy may apply.",
+	"Unlimited receipts (custom SLA)": "Unlimited with contractual throughput & uptime guarantees.",
+	"Data retention: 30 days": "Receipts stored for 30 days then purged automatically.",
+	"Data retention: 3 years": "Retention aligns with common tax documentation requirements.",
+	"Data retention: 7 years": "Extended retention for audit and compliance needs.",
+	"Data retention: 7+ years": "Long‑term retention beyond 7 years as required.",
+	"Data retention: Custom": "Tailored retention policy negotiated for your compliance needs.",
+	"Community support": "Access to community forum & public knowledge base.",
+	"Priority support": "Faster response times via email (SLA targets).",
+	"Dedicated support": "Named account manager plus prioritized escalation paths.",
+	"Basic analytics": "Essential usage and volume metrics dashboard.",
+	"Advanced analytics & reporting": "Drill‑down filters, trends, exports & comparative insights.",
+	"PDF/CSV export": "Download structured data for bookkeeping or analysis.",
+	"Integrations (Slack, Accounting)": "Out‑of‑the‑box connectors to Slack and popular accounting tools.",
+	"SSO / SAML + API access": "Single Sign‑On plus full REST API access for automation.",
+	"Custom AI & on‑prem options": "Bring your own models or deploy on private infrastructure.",
 };
 
-export const PLAN_METADATA = {
-    free: {
-        name: "Free",
-        description: "Starter plan for testing and exploration",
-        recommended: false,
-    },
-    personal: {
-        name: "Personal",
-        description: "Ideal for individuals and freelancers",
-        recommended: false,
-    },
-    pro: {
-        name: "Pro",
-        description: "For small teams and growing businesses",
-        recommended: true,
-    },
-    business: {
-        name: "Business",
-        description: "Designed for mid‑size companies needing scalability and integration",
-        recommended: false,
-    },
-    enterprise: {
-        name: "Enterprise",
-        description: "Custom solutions for large enterprises requiring compliance and flexibility",
-        recommended: false,
-    },
-};
+export const PLAN_METADATA = Object.fromEntries(
+	Object.entries(PRICING_CATALOG).map(([id, v]) => [
+		id,
+		{ name: capitalize(id), description: v.description, recommended: v.recommended },
+	])
+);
 
-export const PLAN_ORDER = ["free", "personal", "pro", "business", "enterprise"];
+function capitalize(id) {
+	return id.charAt(0).toUpperCase() + id.slice(1);
+}
 
 export const BASE_CURRENCY = "USD";
 export const CURRENCY_RATES = {
-    USD: 1,
-    EUR: 0.9,
+	USD: 1,
+	EUR: 0.9,
 };
 
 export function convertPriceUSD(valueUSD, targetCurrency) {
-    const rate = CURRENCY_RATES[targetCurrency] || 1;
-    return roundCurrency(valueUSD * rate);
+	const rate = CURRENCY_RATES[targetCurrency] || 1;
+	return roundCurrency(valueUSD * rate);
 }
+
+export { PRICING_ORDER as PLAN_ORDER } from "../../../../../shared/pricing/catalog";

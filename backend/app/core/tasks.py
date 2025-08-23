@@ -491,19 +491,22 @@ def process_stripe_event(event: dict):
             user = session.query(User).filter(User.stripe_customer_id == customer).first()
             if not user:
                 return
-            if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
-                if getattr(user, "plan", None) != PlanType.FREE:
-                    user.plan = PlanType.FREE
-                    session.commit()
-            elif status in ("active", "trialing") and price_id:
-                new_plan = None
-                if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
-                    new_plan = PlanType.PRO
-                elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
-                    new_plan = PlanType.BUSINESS
-                if new_plan is not None and getattr(user, "plan", None) != new_plan:
-                    user.plan = new_plan
-                    session.commit()
+            if user:
+                user.subscription_status = status
+                if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
+                    if getattr(user, "plan", None) != PlanType.FREE:
+                        user.plan = PlanType.FREE
+                    user.payment_state = "past_due" if status in ("unpaid",) else None
+                elif status in ("active", "trialing") and price_id:
+                    new_plan = None
+                    if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                        new_plan = PlanType.PRO
+                    elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
+                        new_plan = PlanType.BUSINESS
+                    if new_plan is not None and getattr(user, "plan", None) != new_plan:
+                        user.plan = new_plan
+                    user.payment_state = "ok"
+                session.commit()
 
         elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
             customer = data_object.get("customer")
@@ -546,7 +549,22 @@ def process_stripe_event(event: dict):
                 if user and not getattr(user, "stripe_customer_id", None):
                     user.stripe_customer_id = cust_id
                     session.commit()
-        # payment_failed and action_required are logged by API already; nothing to persist synchronously here
+        elif event_type in ("invoice.payment_failed",):
+            customer = data_object.get("customer")
+            if customer:
+                user = session.query(User).filter(User.stripe_customer_id == customer).first()
+                if user:
+                    user.payment_state = "past_due"
+                    user.last_invoice_status = "failed"
+                    session.commit()
+        elif event_type in ("invoice.payment_action_required",):
+            customer = data_object.get("customer")
+            if customer:
+                user = session.query(User).filter(User.stripe_customer_id == customer).first()
+                if user:
+                    user.payment_state = "requires_action"
+                    user.last_invoice_status = "action_required"
+                    session.commit()
     except Exception as e:  # pragma: no cover
         print(f"[stripe][task] failed to process event {event.get('type')}: {e}")
         try:
