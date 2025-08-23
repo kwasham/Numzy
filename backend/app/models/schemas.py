@@ -316,9 +316,8 @@ class JobResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     receipt_id: Optional[int] = None
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
 
 class JobStatus(str, Enum):
     """Job status enumeration."""
@@ -335,6 +334,5 @@ class AuditRead(BaseModel):
     receipt_id: int
     decision: Dict[str, Any]
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
