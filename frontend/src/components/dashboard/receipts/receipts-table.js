@@ -17,6 +17,7 @@ import { XCircleIcon } from "@phosphor-icons/react/dist/ssr/XCircle";
 
 import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
+import { parseAmount } from "@/lib/parse-amount";
 import { DataTable } from "@/components/core/data-table";
 
 import { useReceiptsSelection } from "./receipts-selection-context";
@@ -24,14 +25,9 @@ import { useReceiptsSelection } from "./receipts-selection-context";
 // Adapter to map receipt rows into the shape expected by the Orders table columns
 function toDisplayRow(r) {
 	const ed = r.extracted_data && typeof r.extracted_data === "object" ? r.extracted_data : {};
-	const merchant = ed.merchant ?? "—";
-	const totalRaw = ed.total;
-	const totalAmount =
-		typeof totalRaw === "number"
-			? totalRaw
-			: typeof totalRaw === "string"
-				? Number(totalRaw.replaceAll(/[^0-9.-]+/g, ""))
-				: 0;
+	const merchant = ed.merchant ?? ed.vendor ?? ed.merchant_name ?? "—";
+	const totalRaw = ed.total ?? ed.amount_total ?? ed.amount;
+	const totalAmount = parseAmount(totalRaw);
 	return {
 		id: r.id,
 		createdAt: new Date(r.created_at),

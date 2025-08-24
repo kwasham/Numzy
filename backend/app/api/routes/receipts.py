@@ -428,15 +428,13 @@ async def download_receipt(
     exp: int,
     sig: str,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    # removed auth dependency to allow browser fetch without Authorization header
 ):
-    """Stream the original file if token is valid and not expired."""
-    # Verify ownership
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
-    receipt = result.scalar_one_or_none()
-    if not receipt:
-        raise HTTPException(status_code=404, detail="Receipt not found")
+    """Stream the original file if token is valid and not expired.
 
+    Uses HMAC-signed, short-lived token, so no Authorization header is required.
+    """
+    # Verify token timing and signature
     now_ts = int(datetime.now(timezone.utc).timestamp())
     if now_ts > int(exp):
         raise HTTPException(status_code=401, detail="Link expired")
@@ -444,6 +442,12 @@ async def download_receipt(
     expected = _sign_download_token(receipt_id, int(exp), settings.SECRET_KEY)
     if not hmac.compare_digest(expected, sig):
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Load receipt by id only; access is controlled by the signed token
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
 
     # Resolve file path and stream
     storage = StorageService()
@@ -464,21 +468,25 @@ async def download_thumbnail(
     exp: int,
     sig: str,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    # removed auth dependency to allow browser fetch without Authorization header
 ):
-    """Return a small JPEG thumbnail. Generates on first request and caches on filesystem."""
-    # Verify ownership and token
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
-    receipt = result.scalar_one_or_none()
-    if not receipt:
-        raise HTTPException(status_code=404, detail="Receipt not found")
+    """Return a small JPEG thumbnail. Generates on first request and caches on filesystem.
 
+    Uses HMAC-signed, short-lived token, so no Authorization header is required.
+    """
+    # Verify token timing and signature
     now_ts = int(datetime.now(timezone.utc).timestamp())
     if now_ts > int(exp):
         raise HTTPException(status_code=401, detail="Link expired")
     expected = _sign_download_token(receipt_id, int(exp), settings.SECRET_KEY)
     if not hmac.compare_digest(expected, sig):
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Load receipt by id only; access is controlled by the signed token
+    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
+    receipt = result.scalar_one_or_none()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
 
     # Load original and generate thumbnail (works for filesystem and MinIO)
     try:

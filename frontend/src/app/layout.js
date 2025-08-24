@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Auth0Provider } from "@auth0/nextjs-auth0";
+import { ClerkProvider } from "@clerk/nextjs";
 import InitColorSchemeScript from "@mui/material/InitColorSchemeScript";
 
 import "@/styles/global.css";
@@ -28,45 +29,35 @@ export const viewport = {
 	themeColor: appConfig.themeColor,
 };
 
-// Dynamic auth provider selection (original strategy-based logic)
-// For Clerk we use a dynamic import to avoid adding it to the bundle when unused.
+// Define the AuthProvider based on the selected auth strategy
+// Remove this block if you are not using any auth strategy
+
+let AuthProvider = React.Fragment;
+
+if (appConfig.authStrategy === AuthStrategy.AUTH0) {
+	AuthProvider = Auth0Provider;
+}
+
+if (appConfig.authStrategy === AuthStrategy.CLERK) {
+	AuthProvider = ClerkProvider;
+}
+
+if (appConfig.authStrategy === AuthStrategy.COGNITO) {
+	AuthProvider = CognitoProvider;
+}
+
+if (appConfig.authStrategy === AuthStrategy.CUSTOM) {
+	AuthProvider = CustomAuthProvider;
+}
+
+if (appConfig.authStrategy === AuthStrategy.SUPABASE) {
+	AuthProvider = SupabaseProvider;
+}
 
 export default async function Layout({ children }) {
 	const settings = await getPersistedSettings();
 	const direction = settings.direction ?? appConfig.direction;
 	const language = settings.language ?? appConfig.language;
-
-	let AuthProvider = React.Fragment;
-	let clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-
-	switch (appConfig.authStrategy) {
-		case AuthStrategy.AUTH0: {
-			AuthProvider = Auth0Provider;
-			break;
-		}
-		case AuthStrategy.CLERK: {
-			const { ClerkProvider } = await import("@clerk/nextjs");
-			const ClerkWrapper = (props) => <ClerkProvider publishableKey={clerkPublishableKey} {...props} />;
-			ClerkWrapper.displayName = "ClerkWrapper";
-			AuthProvider = ClerkWrapper;
-			break;
-		}
-		case AuthStrategy.COGNITO: {
-			AuthProvider = CognitoProvider;
-			break;
-		}
-		case AuthStrategy.CUSTOM: {
-			AuthProvider = CustomAuthProvider;
-			break;
-		}
-		case AuthStrategy.SUPABASE: {
-			AuthProvider = SupabaseProvider;
-			break;
-		}
-		default: {
-			AuthProvider = React.Fragment;
-		}
-	}
 
 	return (
 		<html dir={direction} lang={language} suppressHydrationWarning>

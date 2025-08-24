@@ -13,8 +13,12 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { toast } from "sonner";
 
+import { parseAmount } from "@/lib/parse-amount";
+
 import { ReceiptsSelectionProvider } from "./receipts-selection-context";
 import { ReceiptsTable } from "./receipts-table";
+
+type AmountLike = number | string | null | undefined;
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -314,15 +318,7 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 	React.useEffect(() => {
 		if (!derived || typeof onStatsChange !== "function") return;
 
-		const toNumber = (val: unknown): number => {
-			if (typeof val === "number") return Number.isFinite(val) ? val : 0;
-			if (typeof val === "string") {
-				const cleaned = val.replaceAll(/[^0-9.-]+/g, "");
-				const n = Number(cleaned);
-				return Number.isFinite(n) ? n : 0;
-			}
-			return 0;
-		};
+		const toNumber = (val: AmountLike): number => parseAmount(val as AmountLike);
 
 		let countAll = 0;
 		let countCompleted = 0;
@@ -337,7 +333,9 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		for (const r of derived) {
 			countAll += 1;
 			const ed = (r.extracted_data ?? undefined) as undefined | Record<string, unknown>;
-			const totalVal = toNumber(ed?.total);
+			const totalVal = toNumber(
+				(ed?.total as AmountLike) ?? (ed?.amount_total as AmountLike) ?? (ed?.amount as AmountLike)
+			);
 			amountAll += totalVal;
 			const status = (r.status || "").toLowerCase();
 			switch (status) {

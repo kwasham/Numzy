@@ -21,6 +21,7 @@ import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
 
 import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
+import { parseAmount } from "@/lib/parse-amount";
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
@@ -102,12 +103,7 @@ export function ReceiptModal({ open, receiptId }) {
 	const merchant = (ed && (ed.merchant ?? ed.vendor ?? ed.merchant_name)) || "—";
 	const address = ed && (ed.address || ed.location || null);
 	const totalRaw = ed && (ed.total ?? ed.amount_total ?? ed.amount);
-	const total =
-		typeof totalRaw === "number"
-			? totalRaw
-			: typeof totalRaw === "string"
-				? Number(totalRaw.replaceAll(/[^0-9.-]/g, ""))
-				: 0;
+	const total = parseAmount(totalRaw);
 	const lineItems = Array.isArray(ed?.items)
 		? ed.items.map((it, idx) => ({
 				id: String(idx + 1).padStart(3, "0"),
