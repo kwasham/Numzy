@@ -17,7 +17,7 @@ docker compose down 2>/dev/null || true
 # Create .env if it doesn't exist (root is the single source of truth)
 if [ ! -f .env ]; then
     echo "📝 Creating .env file..."
-    cat > .env << 'EOF'
+    cat > .env << 'EOF_ENV'
 # Environment
 ENVIRONMENT=development
 
@@ -38,12 +38,15 @@ MINIO_SECRET_KEY=minioadmin
 MINIO_BUCKET_NAME=receipts
 
 # Auth
-DEV_AUTH_BYPASS=true
 CLERK_SECRET_KEY=your-clerk-secret-key
+CLERK_JWKS_URL=your-clerk-jwks-url
+CLERK_API_URL=https://api.clerk.com/v1
+# Uncomment the following line only when intentionally bypassing auth locally.
+# DEV_AUTH_BYPASS=true
 
 # CORS
 BACKEND_CORS_ORIGINS=["http://localhost:3000"]
-EOF
+EOF_ENV
 fi
 
 # Do NOT copy .env into backend; the app loads the nearest .env automatically.

@@ -1,4 +1,15 @@
-"""Database configuration and session management."""
+"""Database configuration and session management.
+
+This module constructs an asynchronous SQLAlchemy engine and session
+factory for the application.  It prefers the `DATABASE_AUTHENTICATED_URL`
+environment variable (or its counterpart on the `Settings` object) when
+present.  This allows applications to connect using a restricted
+PostgreSQL role (e.g., the `authenticated` role on Neon) for runtime
+queries while retaining the ability to run migrations via Alembic using
+`ALEMBIC_DATABASE_URL`.  When neither is provided, the traditional
+`DATABASE_URL` (or corresponding env var) is used.  A fallback to
+SQLite is permitted in development if configured.
+"""
 
 from __future__ import annotations
 
@@ -9,57 +20,83 @@ from sqlalchemy.orm import declarative_base
 from app.core.config import settings
 import os
 
-
 # Track whether we fell back to SQLite during init
 USING_SQLITE_FALLBACK: bool = False
 LAST_DB_INIT_ERROR: Optional[str] = None
 
-# Create async engine with sensible fallbacks; prefer ALEMBIC_DATABASE_URL to avoid drift
+# -----------------------------------------------------------------------------
+# Determine the connection string to use.
+#
+# Precedence order:
+#   1. ALEMBIC_DATABASE_URL – used for migrations and takes priority over all
+#      others.  This allows Alembic to run against the owner connection even
+#      when the app runs with an authenticated role.
+#   2. DATABASE_AUTHENTICATED_URL – when provided, runtime queries will use
+#      this connection string.  It should reference a restricted role (e.g.,
+#      `authenticated`) that works with Neon row-level security.  If unset,
+#      the app falls back to DATABASE_URL.
+#   3. DATABASE_URL – the traditional database connection string, typically
+#      using the owner/admin role.  Can be set via the Settings class or
+#      environment variable.  Only used when neither alembic nor
+#      authenticated URLs are provided.
+# If all of the above are undefined, a local SQLite database may be used when
+# DB_DEV_FALLBACK_SQLITE=true and the environment is development.  Otherwise
+# the application will raise an error.
+
 alembic_url = os.getenv("ALEMBIC_DATABASE_URL") or getattr(settings, "ALEMBIC_DATABASE_URL", None)
-db_url = alembic_url or settings.DATABASE_URL or os.getenv("DATABASE_URL")
+# Read the authenticated URL from either environment or settings
+auth_db_url = os.getenv("DATABASE_AUTHENTICATED_URL") or getattr(settings, "DATABASE_AUTHENTICATED_URL", None)
+# Fallback to general database URL
+primary_db_url = settings.DATABASE_URL or os.getenv("DATABASE_URL")
+db_url = alembic_url or auth_db_url or primary_db_url
 
 if not db_url:
-    # Fail fast when fallback is disabled; otherwise use local SQLite for dev.
+    # Fail fast when no DB URL is provided and fallback is disabled; otherwise
+    # use a local SQLite database for development convenience.
     if not getattr(settings, "DB_DEV_FALLBACK_SQLITE", False):
         raise RuntimeError(
-            "No DATABASE_URL provided and unable to derive from ALEMBIC_DATABASE_URL; "
-            "with DB_DEV_FALLBACK_SQLITE=false, a Postgres URL (e.g., Neon) is required."
+            "No database URL provided via ALEMBIC_DATABASE_URL, "
+            "DATABASE_AUTHENTICATED_URL or DATABASE_URL; with "
+            "DB_DEV_FALLBACK_SQLITE=false, a Postgres URL (e.g., Neon) is required."
         )
     db_url = "sqlite+aiosqlite:///./app.db"
 
-engine_kwargs = dict(echo=False, pool_pre_ping=True)
-connect_args = {}
+engine_kwargs: dict[str, Any] = dict(echo=False, pool_pre_ping=True)
+connect_args: dict[str, Any] = {}
 
 try:
     url_obj = make_url(db_url)
 except Exception:
     url_obj = None
 
-# Normalize URL to async-friendly driver names
+# Normalize the driver and query parameters for async usage.  For Postgres
+# connections, normalize to use psycopg for async operations and disable
+# channel binding.  Always default to sslmode=require when not explicitly
+# provided; Neon prefers TLS connections.
+conninfo: Optional[str] = None
 if url_obj is not None:
     driver = url_obj.drivername or ""
-    conninfo: Optional[str] = None
-    # Upgrade sqlite to aiosqlite for async usage
+    # SQLite: upgrade to aiosqlite
     if driver == "sqlite":
         url_obj = url_obj.set(drivername="sqlite+aiosqlite")
         db_url = str(url_obj)
-    # Ensure Postgres uses an async-capable driver (psycopg supports async in SQLAlchemy 2)
+    # PostgreSQL: normalize driver and set query params
     elif driver in {"postgresql", "postgres", "postgresql+psycopg", "postgresql+psycopg2"}:
-        # Normalize to psycopg and ensure channel_binding doesn't block auth
         q = dict(url_obj.query or {})
+        # Ensure channel binding doesn't block authentication
         if q.get("channel_binding") == "require":
             q["channel_binding"] = "disable"
         elif "channel_binding" not in q:
             q["channel_binding"] = "disable"
-        # Keep sslmode=require if present; default to require for Neon
+        # Always require SSL unless explicitly disabled
         if not q.get("sslmode"):
             q["sslmode"] = "require"
         url_obj = url_obj.set(drivername="postgresql+psycopg", query=q)
         db_url = str(url_obj)
-        # Provide full conninfo so psycopg honors libpq options (prefer the original env DSN)
+        # Use the full DSN for psycopg's AsyncConnection to honour libpq options.
         conninfo = alembic_url or str(url_obj.set(drivername="postgresql"))
+    # Asyncpg driver: convert to psycopg with similar settings
     elif driver == "postgresql+asyncpg":
-        # Prefer psycopg for consistency with migrations/worker and Neon channel binding
         q = dict(url_obj.query or {})
         if q.get("channel_binding") == "require":
             q["channel_binding"] = "disable"
@@ -69,30 +106,15 @@ if url_obj is not None:
             q["sslmode"] = "require"
         url_obj = url_obj.set(drivername="postgresql+psycopg", query=q)
         db_url = str(url_obj)
-    conninfo = alembic_url or str(url_obj.set(drivername="postgresql"))
+        conninfo = alembic_url or str(url_obj.set(drivername="postgresql"))
 
-# if url_obj and url_obj.drivername in {"postgresql+asyncpg", "postgresql+psycopg"}:
-#     q = dict(url_obj.query)
-#     # For psycopg async, sslmode/channel_binding are acceptable; for asyncpg we avoid them.
-#     if url_obj.drivername == "postgresql+asyncpg":
-#         # Enforce SSL via connect args for asyncpg
-#         connect_args["ssl"] = True
-#         q.pop("sslmode", None)
-#         q.pop("channel_binding", None)
-#     # Re-apply sanitized/desired params
-#     url_obj = url_obj.set(query=q)
-#     db_url = str(url_obj)
-
-# if not db_url.startswith("sqlite+"):
-#     engine_kwargs.update(pool_size=10, max_overflow=20)
-# Note: URL is safe to log; contains credentials. Avoid logging in production.
-# When using psycopg, construct the connection with async_creator using full conninfo.
+# Log the selected URL for debugging.  Do not log secrets in production.
 print(f"Creating async engine with URL: {db_url}")
 if conninfo:
-    def _async_creator():
+    def _async_creator() -> Any:
         import re
         import psycopg
-        # Mask password in logs
+        # Mask the password in logs
         masked = re.sub(r"//([^:]+):[^@]+@", r"//\\1:***@", conninfo)
         print(f"psycopg async conninfo: {masked}")
         return psycopg.AsyncConnection.connect(conninfo=conninfo)
@@ -100,7 +122,7 @@ if conninfo:
 else:
     engine = create_async_engine(db_url, connect_args=connect_args, **engine_kwargs)
 
-# Create async session factory
+# Create session factory
 AsyncSessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -109,12 +131,16 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
-# Create declarative base
+# Declarative base
 Base = declarative_base()
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency to get database session."""
+    """Dependency that yields a database session.
+
+    This function is intended for FastAPI dependency injection.  Each
+    session is scoped to the request and closed after use.
+    """
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -123,16 +149,23 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Initialize database tables."""
+    """Initialize database tables.
+
+    This helper creates all database tables as defined on the declarative
+    `Base`.  It is typically called during application startup.  When the
+    primary connection fails (e.g., Neon unreachable), this function can
+    optionally fall back to a local SQLite database in development as
+    controlled by `DB_DEV_FALLBACK_SQLITE`.
+    """
     global engine, AsyncSessionLocal, USING_SQLITE_FALLBACK, LAST_DB_INIT_ERROR
     try:
         async with engine.begin() as conn:
-            # Import all models to ensure they're registered
-            from app.models import tables  # noqa
+            # Import all models to ensure metadata is populated
+            from app.models import tables  # noqa: F401
             await conn.run_sync(Base.metadata.create_all)
     except Exception as e:
         LAST_DB_INIT_ERROR = str(e)
-        # Optional dev fallback to SQLite when Neon is unreachable/misconfigured
+        # Fallback to SQLite when in development and fallback enabled
         if (settings.ENVIRONMENT or "development").lower() == "development" and getattr(settings, "DB_DEV_FALLBACK_SQLITE", True):
             import logging
             logging.getLogger(__name__).warning(f"DB init failed ({e}); falling back to SQLite for development")
@@ -160,10 +193,9 @@ def get_db_debug_info() -> Dict[str, Any]:
         info["last_db_init_error"] = LAST_DB_INIT_ERROR
     try:
         # engine.url is a SQLAlchemy URL instance; str() will include the password by default.
-        # We will parse and reconstruct without password.
+        # We will parse and reconstruct without the password.
         url_str = str(engine.url) if hasattr(engine, "url") else db_url
         url_obj = make_url(url_str)
-        # Build a masked URL (no password)
         masked_url = url_obj.set(password=None)
         info.update(
             {
@@ -176,13 +208,13 @@ def get_db_debug_info() -> Dict[str, Any]:
                 "url": str(masked_url),
             }
         )
-    except Exception as ex:  # pragma: no cover - defensive
+    except Exception as ex:
         info.update({"error": f"unable to parse engine url: {ex}"})
-    # Also indicate whether related envs exist (booleans only)
     info.update(
         {
             "has_DATABASE_URL_env": bool(os.getenv("DATABASE_URL") or getattr(settings, "DATABASE_URL", None)),
             "has_ALEMBIC_DATABASE_URL_env": bool(os.getenv("ALEMBIC_DATABASE_URL") or getattr(settings, "ALEMBIC_DATABASE_URL", None)),
+            "has_DATABASE_AUTHENTICATED_URL_env": bool(os.getenv("DATABASE_AUTHENTICATED_URL") or getattr(settings, "DATABASE_AUTHENTICATED_URL", None)),
         }
     )
     return info
