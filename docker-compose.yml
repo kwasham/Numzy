@@ -1,23 +1,8 @@
 version: "3.9"
 
 services:
-  # Optional PostgreSQL for local development (use profile local-db)
-  postgres:
-    image: postgres:15-alpine
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: numzy
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    profiles: ["local-db"]
+  # NOTE: Local PostgreSQL service removed (2025-08-28) to enforce exclusive Neon usage.
+  # If you need a local Postgres again, reintroduce a service named `postgres` in a feature branch.
 
   # Shared infrastructure (profile: infra)
   redis:
@@ -62,13 +47,14 @@ services:
     ports:
       - "8000:8000"
     env_file:
+      - ./backend/.env
       - ./.env
     environment:
       DEV_AUTH_BYPASS: "false"
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
-      # Default to local postgres if profile local-db is used; otherwise Neon via .env
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
+      # Neon URL must be provided via .env (ALEMBIC_DATABASE_URL and/or DATABASE_URL / DATABASE_AUTHENTICATED_URL)
+      # Removal of local Postgres fallback is intentional to prevent drift.
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -86,6 +72,7 @@ services:
     command: python app/mcp/prompt_server.py
     working_dir: /app
     env_file:
+      - ./backend/.env
       - ./.env
     environment:
       DEV_AUTH_BYPASS: "false"
@@ -102,6 +89,7 @@ services:
     volumes:
       - ./backend:/app
     env_file:
+      - ./backend/.env
       - ./.env
     environment:
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
@@ -112,7 +100,7 @@ services:
       MINIO_BUCKET_NAME: receipts
       STORAGE_BACKEND: minio
       DEV_AUTH_BYPASS: "false"
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@postgres:5432/numzy}
+      # Intentionally no local fallback; Neon variables required.
     depends_on:
       - api
       - redis
@@ -133,6 +121,5 @@ services:
   #   profiles: ["frontend"]
 
 volumes:
-  postgres_data:
   redis_data:
   minio_data:

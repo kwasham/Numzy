@@ -110,6 +110,9 @@ if url_obj is not None:
 
 # Log the selected URL for debugging.  Do not log secrets in production.
 print(f"Creating async engine with URL: {db_url}")
+if "@postgres:" in db_url:
+    # Emit a clear warning if someone reintroduces local Postgres usage unintentionally.
+    print("WARNING: Detected connection host 'postgres' (local container). Project policy is Neon-only. Verify environment configuration.")
 if conninfo:
     def _async_creator() -> Any:
         import re

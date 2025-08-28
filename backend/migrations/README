@@ -1,1 +1,21 @@
 Generic single-database configuration.
+
+Project Note (2025-08-28):
+This codebase previously had TWO migration roots:
+	1. legacy: backend/alembic/versions
+	2. active: backend/migrations/versions (configured via alembic.ini script_location)
+
+The legacy path accumulated a few revisions (add_background_jobs, add_subscription_state_fields, etc.)
+while new work landed in migrations/versions, creating divergent histories and multi-head issues.
+
+We are standardizing on migrations/versions ONLY.
+Action items:
+	- Do not add new revisions under backend/alembic/versions.
+	- After all environments are stamped at head, we will archive the legacy directory or remove it.
+	- A helper script widened alembic_version.version_num to 255 to accommodate longer revision ids.
+
+If you encounter multiple heads again, run:
+	docker compose run --rm api alembic heads
+and inspect for any stray revisions reintroduced under the legacy path.
+
+— Numzy Migration Hygiene Update
