@@ -29,36 +29,41 @@ def get_default_extraction_prompt() -> str:
         total and any handwritten notes. Use the following JSON schema
         for the output:
 
-                ReceiptDetails: {
-          merchant: string | null,
-          location: {
-            city: string | null,
-            state: string | null,
-            zipcode: string | null,
-          },
-          time: ISO8601 datetime string | null,
-          items: [
-            {
-              description: string | null,
-              product_code: string | null,
-              category: string | null,
-              item_price: string | null,
-              sale_price: string | null,
-              quantity: string | null,
-              total: string | null,
-            },
-          ],
-          subtotal: string | null,
-          tax: string | null,
-          total: string | null,
-          handwritten_notes: [string],
+                                ReceiptDetails: {
+                    merchant: string | null,
+                    location: {
+                        line1: string | null,
+                        line2: string | null,
+                        street_address: string | null,
+                        city: string | null,
+                        state: string | null,
+                        zipcode: string | null,
+                    },
+                    time: ISO8601 datetime string | null,
+                    items: [
+                        {
+                            description: string | null,
+                            product_code: string | null,
+                            category: string | null,
+                            item_price: string | null,
+                            sale_price: string | null,
+                            quantity: string | null,
+                            total: string | null,
+                        },
+                    ],
+                    subtotal: string | null,
+                    tax: string | null,
+                    shipping: string | null,
+                    receiving: string | null,
+                    total: string | null,
+                    handwritten_notes: [string],
                     payment_method: {
                         type: string | null,        // e.g., card, cash, apple_pay
                         brand: string | null,       // e.g., Visa, Mastercard, Amex
                         last4: string | null,       // last 4 digits if printed
                         cardholder: string | null,  // name on card if present
                     },
-        }
+                }
 
         Only provide fields you can infer from the receipt. If a field
         is missing then use null or an empty list as appropriate. Do

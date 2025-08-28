@@ -176,3 +176,38 @@ async def get_user(current_user: User = Depends(get_current_user)) -> User:
 async def get_audit_service(db: AsyncSession = Depends(get_db_session)) -> AuditService:
     """Get audit service instance."""
     return AuditService()
+
+
+# -----------------------------------------------------------------------------
+# PDF -> image helper used by ExtractionService
+# -----------------------------------------------------------------------------
+try:  # Local optional import; PyMuPDF is in requirements but guard defensively
+    import fitz  # type: ignore
+except Exception:  # pragma: no cover
+    fitz = None  # type: ignore
+
+async def process_pdf_to_images(data: bytes, max_pages: int = 5, dpi: int = 144) -> list[bytes]:
+    """Convert a PDF byte stream into a list of page images (PNG bytes).
+
+    Only the first ``max_pages`` pages are rendered to avoid huge memory usage.
+    Returns an empty list if PDF rendering is unavailable or fails.
+    """
+    if not data:
+        return []
+    if fitz is None:  # PyMuPDF not available
+        return []
+    images: list[bytes] = []
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+        page_count = min(doc.page_count, max_pages)
+        for i in range(page_count):
+            page = doc.load_page(i)
+            # Use matrix for DPI scaling
+            zoom = dpi / 72.0  # base DPI is 72
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            images.append(pix.tobytes("png"))
+        doc.close()
+    except Exception:  # pragma: no cover - graceful degradation
+        return []
+    return images

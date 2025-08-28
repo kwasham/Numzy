@@ -33,6 +33,9 @@ from .enums import PlanType, RuleType, ReceiptStatus, EvaluationStatus
 class Location(BaseModel):
     """Location information from a receipt."""
 
+    line1: Optional[str] = None
+    line2: Optional[str] = None
+    street_address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     zipcode: Optional[str] = None
@@ -68,6 +71,8 @@ class ReceiptDetails(BaseModel):
     items: List[LineItem] = Field(default_factory=list)
     subtotal: Optional[str] = None
     tax: Optional[str] = None
+    shipping: Optional[str] = None  # Shipping or delivery cost if present
+    receiving: Optional[str] = None  # Receiving / handling fee if present
     total: Optional[str] = None
     handwritten_notes: List[str] = Field(default_factory=list)
     payment_method: PaymentMethod = Field(default_factory=PaymentMethod)

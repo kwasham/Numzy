@@ -8,7 +8,7 @@ defaulted to `FREE` and inputs are sanitised via Pydantic models.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db_session, get_clerk_payload
@@ -76,12 +76,12 @@ async def update_user(user_id: int, user_in: UserUpdate, db: AsyncSession = Depe
     return UserRead.from_orm(user)
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}")
 async def delete_user(
     user_id: int,
     db: AsyncSession = Depends(get_db_session),
     payload: dict = Depends(get_clerk_payload),
-) -> None:
+) -> Response:
     """Delete a user if the caller is the owner or has the `admin` role.
 
     The caller's Clerk JWT is decoded via `get_clerk_payload`, which provides
@@ -96,3 +96,4 @@ async def delete_user(
     require_owner_or_admin(payload, user.clerk_id)
     await db.delete(user)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

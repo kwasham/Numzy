@@ -136,8 +136,8 @@ def decode_clerk_jwt(token: str) -> Dict:
 
 
 async def get_current_user(
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    request: Request | None = None,
 ) -> User:
     """Resolve the current authenticated user.
 
@@ -172,18 +172,31 @@ async def get_current_user(
     clerk_user_id = payload.get("sub")
     if not clerk_user_id:
         raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
+
+    # Fast path: if we already have a local user for this Clerk ID, return it
+    result = await db.execute(select(User).where(User.clerk_id == clerk_user_id))
+    existing = result.scalar_one_or_none()
+    if existing is not None:
+        return existing
+
     if not CLERK_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Clerk secret key not configured")
-    # Fetch user details from Clerk's API to verify the user exists and is not
-    # disabled.  Use AsyncClient for non-blocking I/O.
-    async with httpx.AsyncClient(timeout=5) as client:
-        resp = await client.get(
-            f"{CLERK_API_URL}/users/{clerk_user_id}",
-            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
-        )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Clerk user not found")
-        clerk_user = resp.json()
+
+    # Fetch user details from Clerk (network).  If the provider is temporarily
+    # unavailable, return 503 instead of 500 to indicate a transient error.
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{CLERK_API_URL}/users/{clerk_user_id}",
+                headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=503, detail="Auth provider timeout; try again")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Clerk user not found")
+
+    clerk_user = resp.json()
     # Extract email and name
     email = (
         clerk_user.get("email_addresses", [{}])[0].get("email_address")
@@ -194,21 +207,19 @@ async def get_current_user(
     name = f"{first} {last}".strip() or email
     if not email:
         raise HTTPException(status_code=400, detail="Clerk user missing email")
-    # Look up existing user by clerk_id or email
-    result = await db.execute(select(User).where(User.clerk_id == clerk_user_id))
+
+    # Look up existing user by email (backfill clerk_id if needed)
+    result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
-    if not user:
-        result = await db.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
     if user:
-        # If user exists but has no clerk_id, backfill it
         if not getattr(user, "clerk_id", None):
             user.clerk_id = clerk_user_id  # type: ignore[attr-defined]
             db.add(user)
             await db.commit()
             await db.refresh(user)
         return user
-    # Create new user: default to FREE plan (do not auto-provision paid plans)
+
+    # Create new user: default to FREE plan
     new_user = User(email=email, name=name, plan=PlanType.FREE, clerk_id=clerk_user_id)
     db.add(new_user)
     await db.commit()
