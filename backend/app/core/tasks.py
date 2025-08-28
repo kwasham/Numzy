@@ -493,28 +493,63 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         # Audit the receipt
         from app.models.schemas import AuditDecision
 
-        # Simple threshold check on total
+        # Parse monetary components for basic math validation
         total_amount = _parse_amount(receipt_details.total)
-        amount_over_limit = total_amount > 50  # Check if over $50 spending limit
+        subtotal_amount = _parse_amount(getattr(receipt_details, 'subtotal', None))
+        tax_amount = _parse_amount(getattr(receipt_details, 'tax', None))
+        shipping_amount = _parse_amount(getattr(receipt_details, 'shipping', None))
+        receiving_amount = _parse_amount(getattr(receipt_details, 'receiving', None))
+
+        # Basic math check (only if we have a subtotal)
+        expected_total = subtotal_amount + tax_amount + shipping_amount + receiving_amount
+        math_error = False
+        math_components_present = subtotal_amount > 0 and (tax_amount > 0 or shipping_amount > 0 or receiving_amount > 0)
+        if math_components_present and total_amount > 0:
+            # Allow small floating tolerance
+            if abs(expected_total - total_amount) > 0.02:
+                math_error = True
+
+        # Threshold rule on total
+        amount_over_limit = total_amount > 50  # spending limit
 
         if span_cm:
             with span_cm(op="task.audit", description="Audit decision"):
+                reasoning_parts = [
+                    f"Total: ${total_amount:.2f}",
+                    f"Subtotal: ${subtotal_amount:.2f}" if subtotal_amount else None,
+                    f"Tax: ${tax_amount:.2f}" if tax_amount else None,
+                    f"Shipping: ${shipping_amount:.2f}" if shipping_amount else None,
+                    f"Receiving: ${receiving_amount:.2f}" if receiving_amount else None,
+                    "Math mismatch detected" if math_error else None,
+                    "Over $50 spending limit" if amount_over_limit else "Within $50 spending limit",
+                ]
+                reasoning = ". ".join([p for p in reasoning_parts if p])
                 audit_result = AuditDecision(
                     not_travel_related=False,
                     amount_over_limit=amount_over_limit,
-                    math_error=False,
+                    math_error=math_error,
                     handwritten_x=False,
-                    reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
-                    needs_audit=amount_over_limit,
+                    reasoning=reasoning,
+                    needs_audit=amount_over_limit or math_error,
                 )
         else:
+            reasoning_parts = [
+                f"Total: ${total_amount:.2f}",
+                f"Subtotal: ${subtotal_amount:.2f}" if subtotal_amount else None,
+                f"Tax: ${tax_amount:.2f}" if tax_amount else None,
+                f"Shipping: ${shipping_amount:.2f}" if shipping_amount else None,
+                f"Receiving: ${receiving_amount:.2f}" if receiving_amount else None,
+                "Math mismatch detected" if math_error else None,
+                "Over $50 spending limit" if amount_over_limit else "Within $50 spending limit",
+            ]
+            reasoning = ". ".join([p for p in reasoning_parts if p])
             audit_result = AuditDecision(
                 not_travel_related=False,
                 amount_over_limit=amount_over_limit,
-                math_error=False,
+                math_error=math_error,
                 handwritten_x=False,
-                reasoning=f"Total amount: ${total_amount:.2f}. {'Over $50 spending limit - needs audit' if amount_over_limit else 'Within $50 spending limit'}",
-                needs_audit=amount_over_limit,
+                reasoning=reasoning,
+                needs_audit=amount_over_limit or math_error,
             )
 
         rec.audit_decision = audit_result.model_dump()
@@ -544,7 +579,15 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
             "status": "success",
             "duration_ms": duration_ms,
             "extracted_total": str(total_amount),
-            "needs_audit": amount_over_limit,
+            "needs_audit": amount_over_limit or math_error,
+            "math_error": math_error,
+            "components": {
+                "subtotal": subtotal_amount,
+                "tax": tax_amount,
+                "shipping": shipping_amount,
+                "receiving": receiving_amount,
+                "expected_total": expected_total,
+            },
         }
 
         session.commit()

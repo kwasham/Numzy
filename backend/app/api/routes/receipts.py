@@ -10,8 +10,8 @@ import hashlib
 import base64
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request, Query
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy import func
@@ -28,16 +28,26 @@ from app.services.storage_service import StorageService, load_file_from_storage
 from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
 from app.core.tasks import _publish_event  # lightweight publisher
+from app.services.cache import (
+    cache_get_json,
+    cache_set_json,
+    invalidate_receipts_summary,
+    invalidate_receipt_detail,
+    summary_cache_key,
+    detail_cache_key,
+)
+import asyncio
+import json
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
 
 @router.post("", response_model=ReceiptRead)
 async def upload_receipt(
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_user),
-    request: Request = None,
 ) -> ReceiptRead:
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
@@ -129,6 +139,12 @@ async def upload_receipt(
     await db.commit()
     await db.refresh(receipt)
     
+    # Invalidate summary caches (new receipt affects list) but do not await pattern deletion inline (fire & forget)
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(invalidate_receipts_summary(user.id))
+    except Exception:
+        pass
     return ReceiptRead.from_orm(receipt)
 
 
@@ -270,6 +286,13 @@ async def reprocess_receipt(
     await db.commit()
     await db.refresh(receipt)
 
+    # Invalidate caches for this receipt + summaries
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(invalidate_receipt_detail(user.id, receipt.id))
+        _asyncio.create_task(invalidate_receipts_summary(user.id))
+    except Exception:
+        pass
     return ReceiptRead.from_orm(receipt)
 
 
@@ -277,12 +300,153 @@ async def reprocess_receipt(
 async def list_receipts(
     db: AsyncSession = Depends(get_db_session),
     user = Depends(get_user),
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ) -> List[ReceiptRead]:
-    """List all receipts for the current user."""
-    query = select(Receipt).where(Receipt.owner_id == user.id)
+    """List receipts for the current user (paged). Falls back to full list if under limit.
+
+    Note: This preserves backwards compatibility but now offers pagination.
+    """
+    query = select(Receipt).where(Receipt.owner_id == user.id).order_by(Receipt.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     receipts = result.scalars().all()
     return receipts
+
+
+class ReceiptSummary(BaseModel):
+    id: int
+    filename: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime | None = None
+    extraction_progress: int | None = 0
+    audit_progress: int | None = 0
+    # minimal merchant & total hints (optional)
+    merchant: str | None = None
+    total: float | None = None
+
+
+@router.get("/summary", response_model=List[ReceiptSummary])
+async def list_receipts_summary(
+    db: AsyncSession = Depends(get_db_session),
+    user = Depends(get_user),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> List[ReceiptSummary]:
+    """Fast summary list with Redis caching (5s TTL).
+
+    Returns only minimal fields required for the table first paint.
+    """
+    cache_key = summary_cache_key(user.id, limit, offset)
+    cached = await cache_get_json(cache_key)
+    if isinstance(cached, list):  # shape already JSON
+        try:
+            return [ReceiptSummary(**item) for item in cached]
+        except Exception:
+            pass  # ignore malformed cache
+    # Query only required columns; extracted_data accessed lazily for merchant/total hints
+    query = (
+        select(Receipt.id, Receipt.filename, Receipt.status, Receipt.created_at, Receipt.updated_at, Receipt.extraction_progress, Receipt.audit_progress, Receipt.extracted_data)
+        .where(Receipt.owner_id == user.id)
+        .order_by(Receipt.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+    summaries: list[ReceiptSummary] = []
+    for row in rows:
+        # row is Row(tuple) -> destructure
+        (rid, fname, status, created_at, updated_at, extraction_progress, audit_progress, extracted_data) = row
+        merchant = None
+        total = None
+        try:
+            if isinstance(extracted_data, dict):
+                merchant = (
+                    extracted_data.get("merchant")
+                    or extracted_data.get("vendor")
+                    or extracted_data.get("merchant_name")
+                )
+                total_raw = (
+                    extracted_data.get("total")
+                    or extracted_data.get("amount_total")
+                    or extracted_data.get("amount")
+                )
+                if isinstance(total_raw, (int, float)):
+                    total = float(total_raw)
+                elif isinstance(total_raw, str):
+                    # simple parse removing non numeric except . -
+                    import re
+                    try:
+                        num = re.sub(r"[^0-9.+-]", "", total_raw)
+                        if num:
+                            total = float(num)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        summaries.append(
+            ReceiptSummary(
+                id=rid,
+                filename=fname,
+                status=str(status.value if hasattr(status, "value") else status),
+                created_at=created_at,
+                updated_at=updated_at,
+                extraction_progress=extraction_progress,
+                audit_progress=audit_progress,
+                merchant=merchant if isinstance(merchant, str) else None,
+                total=total,
+            )
+        )
+    # Cache JSON-serializable form
+    try:
+        await cache_set_json(cache_key, [s.dict() for s in summaries], ttl=5)
+    except Exception:
+        pass
+    return summaries
+
+
+@router.get("/events", include_in_schema=False)
+async def receipt_events(
+    request: Request,
+    user = Depends(get_user),
+):
+    """Server-Sent Events stream of receipt status/progress updates for the authenticated user.
+
+    Relays Redis pub/sub messages published on channel receipts:user:{user_id}.
+    """
+    try:
+        import redis.asyncio as aioredis  # type: ignore
+    except Exception:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="Events backend unavailable")
+
+    channel = f"receipts:user:{user.id}"
+    client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    pubsub = client.pubsub()
+    await pubsub.subscribe(channel)
+
+    async def event_generator():  # type: ignore
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message":
+                    data = msg.get("data")
+                    # Ensure each event is a single line JSON
+                    yield f"data: {data}\n\n"
+                # Cooperative sleep to avoid tight loop
+                await asyncio.sleep(0.05)
+        finally:
+            with contextlib.suppress(Exception):  # type: ignore
+                await pubsub.unsubscribe(channel)
+                await pubsub.close()
+            with contextlib.suppress(Exception):  # type: ignore
+                await client.close()
+
+    import contextlib  # local import to avoid global dependency
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 
 
 @router.get("/{receipt_id}", response_model=ReceiptRead)
@@ -292,11 +456,24 @@ async def get_receipt(
     user = Depends(get_user),
 ) -> ReceiptRead:
     """Get a specific receipt by ID."""
+    # Try cache first
+    ck = detail_cache_key(user.id, receipt_id)
+    cached = await cache_get_json(ck)
+    if isinstance(cached, dict):
+        try:
+            return ReceiptRead(**cached)
+        except Exception:
+            pass
     query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
     result = await db.execute(query)
     receipt = result.scalar_one_or_none()
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
+    # Cache minimal period (5s)
+    try:
+        await cache_set_json(ck, ReceiptRead.from_orm(receipt).dict(), ttl=5)
+    except Exception:
+        pass
     return receipt
 
 
@@ -321,6 +498,13 @@ async def update_receipt(
     
     await db.commit()
     await db.refresh(receipt)
+    # Invalidate caches
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(invalidate_receipt_detail(user.id, receipt.id))
+        _asyncio.create_task(invalidate_receipts_summary(user.id))
+    except Exception:
+        pass
     return receipt
 
 
@@ -337,8 +521,15 @@ async def delete_receipt(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     
+    rid = receipt.id
     await db.delete(receipt)
     await db.commit()
+    try:
+        import asyncio as _asyncio
+        _asyncio.create_task(invalidate_receipt_detail(user.id, rid))
+        _asyncio.create_task(invalidate_receipts_summary(user.id))
+    except Exception:
+        pass
     # Don't return anything for 204 status
 
 
@@ -394,6 +585,26 @@ async def get_receipt_download_url(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
+    # Ensure file exists before issuing a URL; avoids client hitting a broken link.
+    # For filesystem: check path. For MinIO: stat object. If backend is remote and returns transient
+    # error, treat as not-ready (409) so client retries.
+    storage = StorageService()
+    try:
+        if getattr(storage, "backend", "filesystem") == "minio" and hasattr(storage, "_client"):
+            try:  # type: ignore[attr-defined]
+                storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
+            except Exception:
+                raise HTTPException(status_code=409, detail="Receipt file not ready")
+        else:
+            full_path = storage.get_full_path(receipt.file_path)
+            if not full_path.exists():
+                raise HTTPException(status_code=409, detail="Receipt file not ready")
+    except HTTPException:
+        raise
+    except Exception:
+        # Unknown error; surface 409 rather than 500 to allow client retry.
+        raise HTTPException(status_code=409, detail="Receipt file not ready")
+
     # Clamp expires_in to 1 minute .. 1 day
     expires_in = max(60, min(expires_in, 86400))
     exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
@@ -414,6 +625,23 @@ async def get_receipt_thumbnail_url(
     receipt = result.scalar_one_or_none()
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
+
+    # Ensure file exists before issuing a URL (see notes in download_url route).
+    storage = StorageService()
+    try:
+        if getattr(storage, "backend", "filesystem") == "minio" and hasattr(storage, "_client"):
+            try:
+                storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
+            except Exception:
+                raise HTTPException(status_code=409, detail="Receipt file not ready")
+        else:
+            full_path = storage.get_full_path(receipt.file_path)
+            if not full_path.exists():
+                raise HTTPException(status_code=409, detail="Receipt file not ready")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=409, detail="Receipt file not ready")
 
     expires_in = max(60, min(expires_in, 86400))
     exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
@@ -493,9 +721,55 @@ async def download_thumbnail(
         original_bytes = load_file_from_storage(receipt.file_path)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
-    thumb = generate_thumbnail(original_bytes, receipt.filename)
-    if thumb is None:
-        # Fallback: just serve original bytes (browser can downscale)
-        return Response(content=original_bytes, media_type="application/octet-stream")
-    return Response(content=thumb, media_type="image/jpeg")
+    thumb = None
+    try:
+        thumb = generate_thumbnail(original_bytes, receipt.filename)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[thumbnail] generation error id={receipt_id} err={e}")
+    if thumb is not None:
+        return Response(content=thumb, media_type="image/jpeg")
+
+    # Fallback logic: ensure we still return a renderable image (especially for PDFs)
+    filename_lower = (receipt.filename or "").lower()
+    # If original is an image type, serve it with an appropriate media type
+    if filename_lower.endswith((".jpg", ".jpeg")):
+        return Response(content=original_bytes, media_type="image/jpeg")
+    if filename_lower.endswith(".png"):
+        return Response(content=original_bytes, media_type="image/png")
+    if filename_lower.endswith(".webp"):
+        return Response(content=original_bytes, media_type="image/webp")
+    if filename_lower.endswith(".gif"):
+        return Response(content=original_bytes, media_type="image/gif")
+
+    # PDF or unknown type: attempt to fabricate a simple placeholder JPEG so the UI has something to show
+    if filename_lower.endswith(".pdf"):
+        try:  # pragma: no cover - best effort placeholder
+            from io import BytesIO
+            try:
+                from PIL import Image, ImageDraw  # type: ignore
+            except Exception:  # Pillow not available (should not happen given requirements)
+                Image = None  # type: ignore
+                ImageDraw = None  # type: ignore
+            if Image is not None:
+                img = Image.new("RGB", (480, 360), color=(245, 245, 245))
+                if ImageDraw is not None:
+                    draw = ImageDraw.Draw(img)
+                    text = "PREVIEW\nUNAVAILABLE" if not filename_lower.endswith(".pdf") else "PDF"
+                    try:
+                        # crude centering / multi-line
+                        lines = text.split("\n")
+                        y = 140
+                        for line in lines:
+                            w, h = draw.textsize(line) if hasattr(draw, "textsize") else (60, 20)
+                            draw.text(((img.width - w) / 2, y), line, fill=(120, 120, 120))
+                            y += h + 4
+                    except Exception:
+                        pass
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=80)
+                return Response(content=buf.getvalue(), media_type="image/jpeg")
+        except Exception:
+            pass
+    # Last resort: empty 204 so client can show a placeholder
+    return Response(status_code=204)
 

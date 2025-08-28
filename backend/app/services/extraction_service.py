@@ -54,7 +54,7 @@ class ExtractionService:
     """
 
     def __init__(self) -> None:
-        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-4o-mini")
+        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-5-nano")
         self.debug: bool = os.getenv("EXTRACTION_DEBUG", "0").lower() in {"1", "true", "yes"}
         self.agents_available = HAS_AGENTS
         if self.debug:
@@ -76,12 +76,39 @@ class ExtractionService:
         """
         # Use override model if provided
         model_name = model or self.model
-        # Convert PDFs to images – import lazily to avoid circular deps
+        # Convert PDFs to images – try shared helper, else inline fallback to avoid hard crash if worker not reloaded
         if filename.lower().endswith(".pdf"):
-            from app.api.dependencies import process_pdf_to_images  # type: ignore
-            images = await process_pdf_to_images(file_data)
+            images: list[bytes] = []
+            try:
+                try:  # Prefer shared helper if present
+                    from app.api.dependencies import process_pdf_to_images as _proc  # type: ignore
+                except Exception:
+                    _proc = None  # type: ignore
+                if _proc:
+                    try:
+                        if self.debug:
+                            logger.info("[extraction][pdf] using shared process_pdf_to_images helper")
+                        images = await _proc(file_data)  # type: ignore[arg-type]
+                    except Exception:
+                        images = []
+                # Inline fallback using PyMuPDF directly if helper absent or returned nothing
+                if not images:
+                    try:  # best effort
+                        import fitz  # type: ignore
+                        if self.debug:
+                            logger.info("[extraction][pdf] inline PyMuPDF fallback engaged (helper missing or empty)")
+                        doc = fitz.open(stream=file_data, filetype="pdf")
+                        if doc.page_count > 0:
+                            page = doc.load_page(0)
+                            pix = page.get_pixmap()
+                            images = [pix.tobytes("png")]
+                        doc.close()
+                    except Exception:
+                        images = []
+            except Exception:
+                images = []
             if not images:
-                raise HTTPException(status_code=400, detail="PDF has no pages")
+                raise HTTPException(status_code=400, detail="PDF has no pages or could not be rendered")
             file_data = images[0]
         # Preprocess image (resize, grayscale) to improve OCR results
         processed = preprocess_image(file_data)
