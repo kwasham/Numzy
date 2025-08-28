@@ -27,7 +27,15 @@ function SignOutButton() {
 	}
 
 	if (appConfig.authStrategy === AuthStrategy.CLERK) {
-		signOutUrl = paths.auth.clerk.signOut;
+		// Clerk sign-out route only allows POST to mitigate logout-CSRF.
+		// Use a form to submit a POST instead of navigating via GET.
+		return (
+			<form action={paths.auth.clerk.signOut} method="post">
+				<MenuItem component="button" type="submit" sx={{ justifyContent: "center", width: "100%" }}>
+					Sign out
+				</MenuItem>
+			</form>
+		);
 	}
 
 	if (appConfig.authStrategy === AuthStrategy.COGNITO) {

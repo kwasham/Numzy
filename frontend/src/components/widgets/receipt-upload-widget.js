@@ -80,6 +80,14 @@ export function ReceiptUploadWidget() {
 			}
 			const data = await uploadOne(first, token);
 			toast.success(`Uploaded: ${first.name}`);
+			// Broadcast new receipt so list view can optimistically insert it
+			try {
+				if (typeof globalThis !== "undefined" && globalThis.dispatchEvent) {
+					globalThis.dispatchEvent(new CustomEvent("receipt:uploaded", { detail: data }));
+				}
+			} catch {
+				/* ignore */
+			}
 			// Optionally, you could route to a detail page if your app supports it
 			clearAll();
 			console.log("Upload result", data);

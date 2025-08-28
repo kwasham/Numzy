@@ -38,8 +38,20 @@ if (appConfig.authStrategy === AuthStrategy.AUTH0) {
 	AuthProvider = Auth0Provider;
 }
 
+// For Clerk we must pass the publishableKey; using the raw ClerkProvider without
+// the key causes runtime "Failed to load Clerk" errors (especially after sign out)
+// because the script cannot auto-discover configuration in this setup.
 if (appConfig.authStrategy === AuthStrategy.CLERK) {
-	AuthProvider = ClerkProvider;
+	const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+	AuthProvider = function ClerkAuthBoundary({ children }) {
+		if (!publishableKey) {
+			if (process.env.NODE_ENV !== "production") {
+				console.error("[auth] Missing NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY – rendering children without ClerkProvider");
+			}
+			return <>{children}</>; // Fail open so the rest of the app still renders
+		}
+		return <ClerkProvider publishableKey={publishableKey}>{children}</ClerkProvider>;
+	};
 }
 
 if (appConfig.authStrategy === AuthStrategy.COGNITO) {
