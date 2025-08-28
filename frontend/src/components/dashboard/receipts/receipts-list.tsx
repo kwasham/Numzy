@@ -90,8 +90,24 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 	);
 	// (Removed prevStatusRef; SSE updates manage completion toasts directly)
 
-	// FAST SUMMARY (cached) for initial paint
-	const { data: summary, isLoading: summaryLoading } = useReceiptSummaries(undefined, 300);
+	// Auth token (once) so summary endpoint can leverage per-user server caching
+	const [authToken, setAuthToken] = React.useState<string | null | undefined>(null);
+	React.useEffect(() => {
+		let mounted = true;
+		(async () => {
+			try {
+				const t = await getToken?.();
+				if (mounted) setAuthToken(t);
+			} catch {
+				/* ignore */
+			}
+		})();
+		return () => {
+			mounted = false;
+		};
+	}, [getToken]);
+	// FAST SUMMARY (cached) for initial paint (token may be null briefly; SWR will refetch when it appears)
+	const { data: summary, isLoading: summaryLoading } = useReceiptSummaries(authToken, 300);
 	React.useEffect(() => {
 		if (summary && (!receipts || receipts.length === 0)) {
 			setReceipts(

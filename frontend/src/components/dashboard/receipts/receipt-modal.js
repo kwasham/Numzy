@@ -100,7 +100,6 @@ export function ReceiptModal({ open, receiptId }) {
 				try {
 					token = await getToken?.();
 				} catch (error_) {
-					// ignore auth token errors in dev
 					console.debug("getToken error", error_);
 				}
 				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -109,34 +108,43 @@ export function ReceiptModal({ open, receiptId }) {
 				const data = await res.json();
 				if (!active) return;
 				setReceipt(data);
-				// Reset preview state before fetching
+				// Reset preview state before fetching any signed URLs
 				setThumbUrl(null);
 				setDownloadUrl(null);
 				setThumbTried(false);
 				setPreviewAttempts(0);
-				// Fetch signed thumbnail URL for preview (preferred) with retry on 409
-				try {
-					const thumb = await fetchSignedUrlWithRetry(
-						`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
-						auth,
-						[400, 800, 1600, 2500]
-					);
-					if (active) {
-						setThumbTried(true);
-						if (thumb) setThumbUrl(thumb);
-						setPreviewAttempts((a) => a + 1);
+				// Kick off thumbnail + download URL retrieval in parallel to minimize perceived latency.
+				// We keep shorter backoff for early attempts to surface preview faster.
+				const thumbPromise = (async () => {
+					try {
+						const thumb = await fetchSignedUrlWithRetry(
+							`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
+							auth,
+							[200, 500, 900, 1400]
+						);
+						if (active) {
+							setThumbTried(true);
+							if (thumb) setThumbUrl(thumb);
+							setPreviewAttempts((a) => a + 1);
+						}
+					} catch (error_) {
+						if (active) setThumbTried(true);
+						console.debug("thumbnail_url error", error_);
 					}
-				} catch (error_) {
-					if (active) setThumbTried(true);
-					console.debug("thumbnail_url error", error_);
-				}
-				// Fallback: signed download URL with retry on 409
-				try {
-					const dl = await fetchSignedUrlWithRetry(`/receipts/${encodeURIComponent(receiptId)}/download_url`, auth);
-					if (dl && active) setDownloadUrl(dl);
-				} catch (error_) {
-					console.debug("download_url error", error_);
-				}
+				})();
+				const downloadPromise = (async () => {
+					try {
+						const dl = await fetchSignedUrlWithRetry(
+							`/receipts/${encodeURIComponent(receiptId)}/download_url`,
+							auth,
+							[300, 700, 1200]
+						);
+						if (dl && active) setDownloadUrl(dl);
+					} catch (error_) {
+						console.debug("download_url error", error_);
+					}
+				})();
+				await Promise.race([thumbPromise, downloadPromise]); // show whichever finishes first
 			} catch (error_) {
 				if (!active) return;
 				setError(error_?.message || "Failed to load");
