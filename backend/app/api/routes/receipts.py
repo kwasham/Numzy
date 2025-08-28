@@ -26,6 +26,8 @@ from app.services.billing_service import BillingService
 from app.core.observability import sentry_breadcrumb, sentry_set_tags
 from app.services.storage_service import StorageService, load_file_from_storage
 from app.utils.image_processing import generate_thumbnail
+from app.services.cache import cache_get_json, cache_set_json
+from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
 from app.core.tasks import _publish_event  # lightweight publisher
 from app.services.cache import (
@@ -647,7 +649,7 @@ async def get_receipt_thumbnail_url(
     exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
     sig = _sign_download_token(receipt.id, exp_ts, settings.SECRET_KEY)
     query = urlencode({"exp": exp_ts, "sig": sig})
-    return {"url": f"/receipts/{receipt.id}/thumbnail?{query}", "expires_in": expires_in}
+    return {"url": f"/receipts/{receipt.id}/thumbnail?{query}", "expires_in": expires_in, "cached": True}
 
 
 @router.get("/{receipt_id}/download")
@@ -716,18 +718,36 @@ async def download_thumbnail(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    # Load original and generate thumbnail (works for filesystem and MinIO)
+    # Attempt cached thumbnail (Redis) first
+    cache_key = f"receipts:thumb:{receipt_id}"
+    try:
+        cached = await cache_get_json(cache_key)
+        if isinstance(cached, str):
+            import base64
+            try:
+                raw = base64.b64decode(cached)
+                return Response(content=raw, media_type="image/jpeg")
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         original_bytes = load_file_from_storage(receipt.file_path)
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
-    thumb = None
     try:
         thumb = generate_thumbnail(original_bytes, receipt.filename)
-    except Exception as e:  # pragma: no cover - defensive
+        if thumb:
+            # Store base64 to Redis (<=512KB) for ~60s
+            if len(thumb) <= 512 * 1024:
+                import base64 as _b64
+                try:
+                    await cache_set_json(cache_key, _b64.b64encode(thumb).decode(), ttl=60)
+                except Exception:
+                    pass
+            return Response(content=thumb, media_type="image/jpeg")
+    except Exception as e:  # pragma: no cover
         print(f"[thumbnail] generation error id={receipt_id} err={e}")
-    if thumb is not None:
-        return Response(content=thumb, media_type="image/jpeg")
 
     # Fallback logic: ensure we still return a renderable image (especially for PDFs)
     filename_lower = (receipt.filename or "").lower()

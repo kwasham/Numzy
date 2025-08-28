@@ -14,7 +14,7 @@ older stored paths.
 
 import uuid
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from io import BytesIO
 
 from fastapi import UploadFile
@@ -52,6 +52,10 @@ class StorageService:
                 print(f"[storage] MinIO bucket ensure failed: {e}")
             else:
                 print(f"[storage:init] Using MinIO backend bucket={self.bucket} endpoint={settings.MINIO_ENDPOINT}")
+            # Lightweight in-memory cache for small thumbnails / recently accessed objects (LRU style)
+            from collections import OrderedDict
+            self._object_cache = OrderedDict()
+            self._object_cache_max = 64  # keep last 64 small objects
         else:
             # Fallback to filesystem
             self.backend = "filesystem"
@@ -125,6 +129,34 @@ class StorageService:
     def get_full_path(self, relative_path: str) -> Path:
         """Resolve a stored file's full path (filesystem only)."""
         return self.base_dir / relative_path
+
+    def get_object_cached(self, object_name: str) -> Optional[bytes]:  # MinIO only
+        if self.backend != "minio" or not hasattr(self, "_client"):
+            return None
+        cache = getattr(self, "_object_cache", None)
+        if cache is None:
+            return None
+        try:
+            data = cache.pop(object_name)
+            cache[object_name] = data  # move to end
+            return data
+        except KeyError:
+            pass
+        try:
+            resp = self._client.get_object(self.bucket, object_name)  # type: ignore[attr-defined]
+            try:
+                data = resp.read()
+            finally:
+                resp.close(); resp.release_conn()
+            # Only cache objects <= 512KB (thumbnails, small images)
+            if len(data) <= 512 * 1024:
+                cache[object_name] = data
+                if len(cache) > self._object_cache_max:
+                    # pop oldest
+                    cache.pop(next(iter(cache)))
+            return data
+        except Exception:
+            return None
 
 
 # Standalone function for use by background tasks

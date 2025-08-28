@@ -33,6 +33,8 @@ import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const PREVIEW_AUTO_REFRESH_INTERVAL = 3000; // ms
 const PREVIEW_MAX_AUTO_ATTEMPTS = 10;
+// Simple module-level thumbnail cache to prevent re-fetch churn when opening/closing quickly
+const _thumbMemoryCache = new Map();
 
 // Numeric helpers
 function safeNum(v, def = 0) {
@@ -109,8 +111,14 @@ export function ReceiptModal({ open, receiptId }) {
 				if (!active) return;
 				setReceipt(data);
 				// Reset preview state before fetching any signed URLs
-				setThumbUrl(null);
-				setDownloadUrl(null);
+				// Attempt memory cache reuse
+				if (_thumbMemoryCache.has(receiptId)) {
+					const cached = _thumbMemoryCache.get(receiptId);
+					setThumbUrl(cached.thumbUrl || null);
+					setDownloadUrl(cached.downloadUrl || null);
+				}
+				setThumbUrl((prev) => prev || null);
+				setDownloadUrl((prev) => prev || null);
 				setThumbTried(false);
 				setPreviewAttempts(0);
 				// Kick off thumbnail + download URL retrieval in parallel to minimize perceived latency.
@@ -145,6 +153,8 @@ export function ReceiptModal({ open, receiptId }) {
 					}
 				})();
 				await Promise.race([thumbPromise, downloadPromise]); // show whichever finishes first
+				// Persist to memory cache
+				_thumbMemoryCache.set(receiptId, { thumbUrl, downloadUrl });
 			} catch (error_) {
 				if (!active) return;
 				setError(error_?.message || "Failed to load");
@@ -156,7 +166,7 @@ export function ReceiptModal({ open, receiptId }) {
 		return () => {
 			active = false;
 		};
-	}, [open, receiptId, getToken]);
+	}, [open, receiptId, getToken, thumbUrl, downloadUrl]);
 
 	// Live patch updates from SSE (fired by receipts list component)
 	React.useEffect(() => {

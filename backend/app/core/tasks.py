@@ -85,7 +85,9 @@ def _publish_event(user_id: int, receipt_id: int, event_type: str, data: dict):
         pub.publish(channel_receipt, __import__("json").dumps(payload))
     except Exception:
         pass
-from app.services.storage_service import load_file_from_storage
+from app.services.storage_service import load_file_from_storage, StorageService
+from app.utils.image_processing import generate_thumbnail
+from app.services.cache import cache_set_json
 
 # Update the broker configuration to be more explicit
 
@@ -481,6 +483,19 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
             "phase": "extraction", "progress": rec.extraction_progress,
             "extracted_data": rec.extracted_data,
         })
+
+        # Pre-generate and cache thumbnail (best-effort) to accelerate first client view
+        try:
+            file_bytes = file_data  # already loaded earlier
+            thumb_bytes = generate_thumbnail(file_bytes, rec.filename or "receipt")
+            if thumb_bytes and len(thumb_bytes) <= 512 * 1024:
+                import base64 as _b64
+                awaitable_cache = cache_set_json  # imported async function
+                # Fire and forget: create task to not block the actor
+                import asyncio as _asyncio
+                _asyncio.create_task(awaitable_cache(f"receipts:thumb:{receipt_id}", _b64.b64encode(thumb_bytes).decode(), ttl=120))
+        except Exception:
+            pass
 
         # Update progress: starting audit
         rec.audit_progress = 10
