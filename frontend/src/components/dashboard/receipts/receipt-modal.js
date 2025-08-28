@@ -35,6 +35,8 @@ const PREVIEW_AUTO_REFRESH_INTERVAL = 3000; // ms
 const PREVIEW_MAX_AUTO_ATTEMPTS = 10;
 // Simple module-level thumbnail cache to prevent re-fetch churn when opening/closing quickly
 const _thumbMemoryCache = new Map();
+const _thumbUrlRefMap = new Map();
+const _downloadUrlRefMap = new Map();
 
 // Numeric helpers
 function safeNum(v, def = 0) {
@@ -82,6 +84,13 @@ export function ReceiptModal({ open, receiptId }) {
 	const [receipt, setReceipt] = React.useState(null);
 	const [downloadUrl, setDownloadUrl] = React.useState(null);
 	const [thumbUrl, setThumbUrl] = React.useState(null);
+	// Keep refs updated for caching logic
+	React.useEffect(() => {
+		if (receiptId && thumbUrl) _thumbUrlRefMap.set(receiptId, thumbUrl);
+	}, [receiptId, thumbUrl]);
+	React.useEffect(() => {
+		if (receiptId && downloadUrl) _downloadUrlRefMap.set(receiptId, downloadUrl);
+	}, [receiptId, downloadUrl]);
 	const [thumbTried, setThumbTried] = React.useState(false);
 	const [previewAttempts, setPreviewAttempts] = React.useState(0);
 	const [autoRefreshing, setAutoRefreshing] = React.useState(false);
@@ -153,8 +162,11 @@ export function ReceiptModal({ open, receiptId }) {
 					}
 				})();
 				await Promise.race([thumbPromise, downloadPromise]); // show whichever finishes first
-				// Persist to memory cache
-				_thumbMemoryCache.set(receiptId, { thumbUrl, downloadUrl });
+				// Persist to memory cache with latest known URLs (from refs if already set asynchronously)
+				_thumbMemoryCache.set(receiptId, {
+					thumbUrl: _thumbUrlRefMap.get(receiptId) || thumbUrl,
+					downloadUrl: _downloadUrlRefMap.get(receiptId) || downloadUrl,
+				});
 			} catch (error_) {
 				if (!active) return;
 				setError(error_?.message || "Failed to load");
@@ -166,7 +178,9 @@ export function ReceiptModal({ open, receiptId }) {
 		return () => {
 			active = false;
 		};
-	}, [open, receiptId, getToken, thumbUrl, downloadUrl]);
+		// Intentionally exclude thumbUrl/downloadUrl to avoid refetch loop; first load only.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [open, receiptId, getToken]);
 
 	// Live patch updates from SSE (fired by receipts list component)
 	React.useEffect(() => {
