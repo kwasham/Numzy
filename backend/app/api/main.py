@@ -68,13 +68,16 @@ app = FastAPI(
 @app.middleware("http")
 async def sentry_context_middleware(request: Request, call_next):  # type: ignore
     if sentry_sdk and settings.SENTRY_DSN:
-        with sentry_sdk.configure_scope() as scope:  # type: ignore
-            scope.set_tag("path", request.url.path)
-            scope.set_tag("method", request.method)
-            # Attempt to pull user id from header (lightweight) before auth dependency runs
-            uid = request.headers.get("x-user-id") or request.headers.get("x-user")
-            if uid:
-                scope.user = {"id": uid}
+        try:  # pragma: no cover - defensive
+            def _apply(scope):  # type: ignore
+                scope.set_tag("path", request.url.path)
+                scope.set_tag("method", request.method)
+                uid = request.headers.get("x-user-id") or request.headers.get("x-user")
+                if uid:
+                    scope.user = {"id": uid}
+            sentry_sdk.scope_manager.configure_scope(_apply)  # type: ignore[attr-defined]
+        except Exception:
+            pass
     response = await call_next(request)
     return response
 

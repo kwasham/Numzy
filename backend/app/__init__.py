@@ -21,6 +21,4 @@ configuration values using environment variables or a ``.env`` file at
 the project root.
 """
 
-from .core.config import settings
-
-__all__ = ["settings"]
+__all__: list[str] = []  # explicit for linters; populated dynamically elsewhere if needed

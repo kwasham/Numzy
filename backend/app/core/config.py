@@ -116,10 +116,10 @@ class Settings(BaseSettings):
     DRAMATIQ_PROMETHEUS_ENABLED: bool = Field(default=False)
     DRAMATIQ_PROMETHEUS_ADDR: str = Field(default="127.0.0.1")
     DRAMATIQ_PROMETHEUS_PORT: int = Field(default=9191)
-    MCP_URL: Optional[str] = Field(default=None, env="MCP_URL")
+    MCP_URL: Optional[str] = Field(default=None, json_schema_extra={"env": "MCP_URL"})
     SECRET_KEY: str = Field(default="changeme")
     STRIPE_API_KEY: Optional[str] = Field(default=None)
-    NEXT_PUBLIC_API_URL: Optional[str] = Field(default=None, env="NEXT_PUBLIC_API_URL")
+    NEXT_PUBLIC_API_URL: Optional[str] = Field(default=None, json_schema_extra={"env": "NEXT_PUBLIC_API_URL"})
     # Frontend base URL used for Stripe redirects
     FRONTEND_BASE_URL: str = Field(default="http://localhost:3000")
     # Dev DB fallback (fail fast by default)
@@ -157,9 +157,13 @@ settings = Settings()
 def get_webhook_secret_list() -> list[str]:
     """Return list of webhook secrets for signature verification.
 
-    Order matters; the first secret is treated as primary.
+    Precedence:
+    1. STRIPE_WEBHOOK_SECRETS (comma separated, ordered)
+    2. Fallback to singular STRIPE_WEBHOOK_SECRET if set
     """
     secrets: list[str] = []
     if settings.STRIPE_WEBHOOK_SECRETS:
         secrets.extend([s.strip() for s in settings.STRIPE_WEBHOOK_SECRETS.split(",") if s.strip()])
+    elif settings.STRIPE_WEBHOOK_SECRET:
+        secrets.append(settings.STRIPE_WEBHOOK_SECRET.strip())
     return secrets

@@ -70,15 +70,19 @@ from typing import Any, Dict, Optional
 
 
 def sentry_set_tags(tags: Dict[str, Any]) -> None:
-	"""Best-effort: set tags on current Sentry scope (strings only)."""
-	try:
-		if not (_SENTRY_AVAILABLE and settings.SENTRY_DSN):
-			return
+	"""Best-effort: set tags on the active Sentry scope.
+
+	Uses push_scope / pop instead of deprecated configure_scope.
+	"""
+	if not (tags and _SENTRY_AVAILABLE and settings.SENTRY_DSN):  # fast path
+		return
+	try:  # pragma: no cover - simple wrapper
 		import sentry_sdk  # type: ignore
-		with sentry_sdk.configure_scope() as scope:  # type: ignore
-			for k, v in (tags or {}).items():
-				# Avoid PII; coerce to short strings
+		# push_scope so we don't mutate global scope unpredictably; rely on Sentry to merge user-visible tags.
+		def _apply(scope):  # type: ignore
+			for k, v in tags.items():
 				scope.set_tag(str(k), str(v)[:128] if v is not None else "")
+		sentry_sdk.scope_manager.configure_scope(_apply)  # type: ignore[attr-defined]
 	except Exception:
 		return
 

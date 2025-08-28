@@ -50,6 +50,7 @@ services:
       - ./backend/.env
       - ./.env
     environment:
+      PYTHONPATH: /app
       DEV_AUTH_BYPASS: "false"
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
@@ -92,6 +93,7 @@ services:
       - ./backend/.env
       - ./.env
     environment:
+      PYTHONPATH: /app
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000

@@ -40,7 +40,7 @@ def test_async_offload_path_returns_200_quickly(monkeypatch):
     client = TestClient(app)
 
     event = {"id": "evt_async_1", "type": "invoice.paid", "data": {"object": {"id": "in_1"}}}
-    resp = client.post("/webhooks/stripe", data=json.dumps(event), headers={"stripe-signature": "sig"})
+    resp = client.post("/webhooks/stripe", content=json.dumps(event), headers={"stripe-signature": "sig"})
     assert resp.status_code == 200
     assert resp.json().get("queued") is True
     assert called["sent"] is True

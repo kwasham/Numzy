@@ -80,7 +80,7 @@ def test_webhook_multi_secret_and_dedup(app_client):
     # First call should be processed (not duplicate)
     resp = app_client.post(
         "/webhooks/stripe",
-        data=payload,
+        content=payload,
         headers={"stripe-signature": "stub"},
     )
     assert resp.status_code == 200
@@ -91,7 +91,7 @@ def test_webhook_multi_secret_and_dedup(app_client):
     # Second call with same id should be deduped
     resp2 = app_client.post(
         "/webhooks/stripe",
-        data=payload,
+        content=payload,
         headers={"stripe-signature": "stub"},
     )
     assert resp2.status_code == 200
@@ -103,7 +103,7 @@ def test_invoice_failed_and_action_required_paths(app_client):
     failed_evt = _fake_event("invoice.payment_failed", {"id": "in_test_1", "customer": "cus_123"}, event_id="evt_2")
     resp = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(failed_evt).encode("utf-8"),
+        content=json.dumps(failed_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert resp.status_code == 200
@@ -112,7 +112,7 @@ def test_invoice_failed_and_action_required_paths(app_client):
     ar_evt = _fake_event("invoice.payment_action_required", {"id": "in_test_2", "customer": "cus_123"}, event_id="evt_3")
     resp2 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(ar_evt).encode("utf-8"),
+        content=json.dumps(ar_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert resp2.status_code == 200
@@ -129,7 +129,7 @@ def test_webhook_rejects_when_all_secrets_invalid(monkeypatch, app_client):
 
     resp = app_client.post(
         "/webhooks/stripe",
-        data=payload,
+        content=payload,
         headers={"stripe-signature": "stub"},
     )
     assert resp.status_code in (400, 401)
@@ -152,7 +152,7 @@ def test_webhook_allowlist_filters_unlisted_event(monkeypatch, app_client):
     filtered_evt = _fake_event("checkout.session.completed", {"id": "cs_f_1"}, event_id="evt_filter_1")
     resp = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(filtered_evt).encode("utf-8"),
+        content=json.dumps(filtered_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert resp.status_code == 200
@@ -165,7 +165,7 @@ def test_webhook_allowlist_filters_unlisted_event(monkeypatch, app_client):
     allowed_evt = _fake_event("invoice.payment_failed", {"id": "in_allow_1"}, event_id="evt_allow_1")
     resp2 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(allowed_evt).encode("utf-8"),
+        content=json.dumps(allowed_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert resp2.status_code == 200
@@ -189,7 +189,7 @@ def test_webhook_allowlist_multiple_patterns(monkeypatch, app_client):
     evt_allowed = _fake_event("checkout.session.completed", {"id": "cs_multi_1"}, event_id="evt_multi_1")
     r1 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(evt_allowed).encode("utf-8"),
+        content=json.dumps(evt_allowed).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert r1.status_code == 200 and r1.json().get("queued") is True
@@ -198,7 +198,7 @@ def test_webhook_allowlist_multiple_patterns(monkeypatch, app_client):
     evt_blocked = _fake_event("customer.subscription.updated", {"id": "sub_multi_1"}, event_id="evt_multi_2")
     r2 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(evt_blocked).encode("utf-8"),
+        content=json.dumps(evt_blocked).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert r2.status_code == 200 and r2.json().get("filtered") is True
@@ -207,7 +207,7 @@ def test_webhook_allowlist_multiple_patterns(monkeypatch, app_client):
     evt_failed = _fake_event("invoice.payment_failed", {"id": "in_multi_1"}, event_id="evt_multi_3")
     r3 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(evt_failed).encode("utf-8"),
+        content=json.dumps(evt_failed).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert r3.status_code == 200 and r3.json().get("queued") is True
@@ -229,12 +229,12 @@ def test_invoice_paid_and_payment_succeeded_events(monkeypatch, app_client):
 
     r1 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(paid_evt).encode("utf-8"),
+        content=json.dumps(paid_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     r2 = app_client.post(
         "/webhooks/stripe",
-        data=json.dumps(succ_evt).encode("utf-8"),
+        content=json.dumps(succ_evt).encode("utf-8"),
         headers={"stripe-signature": "stub"},
     )
     assert r1.status_code == 200 and r1.json().get("queued") is True
