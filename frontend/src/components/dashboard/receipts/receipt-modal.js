@@ -4,6 +4,7 @@ import * as React from "react";
 import RouterLink from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
+import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -13,9 +14,12 @@ import DialogContent from "@mui/material/DialogContent";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Link from "@mui/material/Link";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { CheckCircleIcon } from "@phosphor-icons/react/dist/ssr/CheckCircle";
+import { MagnifyingGlassPlus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassPlus";
 import { PencilSimpleIcon } from "@phosphor-icons/react/dist/ssr/PencilSimple";
 import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
 
@@ -27,6 +31,45 @@ import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const PREVIEW_AUTO_REFRESH_INTERVAL = 3000; // ms
+const PREVIEW_MAX_AUTO_ATTEMPTS = 10;
+
+// Numeric helpers
+function safeNum(v, def = 0) {
+	if (typeof v === "number") return Number.isFinite(v) ? v : def;
+	if (typeof v === "string") {
+		const trimmed = v.trim();
+		if (!trimmed) return def;
+		const n = Number(trimmed);
+		return Number.isFinite(n) ? n : def;
+	}
+	return def;
+}
+
+// Retry helper for signed URL endpoints: retries on 409 (file not ready)
+async function fetchSignedUrlWithRetry(path, headers, attempts = [300, 800, 1500]) {
+	for (let i = 0; i <= attempts.length; i++) {
+		try {
+			const res = await fetch(`${API_URL}${path}`, { headers });
+			if (res.ok) {
+				const { url } = await res.json();
+				return `${API_URL}${url}`;
+			}
+			if (res.status === 409 && i < attempts.length) {
+				await new Promise((r) => setTimeout(r, attempts[i]));
+				continue;
+			}
+			return null;
+		} catch {
+			if (i < attempts.length) {
+				await new Promise((r) => setTimeout(r, attempts[i]));
+				continue;
+			}
+			return null;
+		}
+	}
+	return null;
+}
 
 export function ReceiptModal({ open, receiptId }) {
 	const router = useRouter();
@@ -37,6 +80,10 @@ export function ReceiptModal({ open, receiptId }) {
 	const [receipt, setReceipt] = React.useState(null);
 	const [downloadUrl, setDownloadUrl] = React.useState(null);
 	const [thumbUrl, setThumbUrl] = React.useState(null);
+	const [thumbTried, setThumbTried] = React.useState(false);
+	const [previewAttempts, setPreviewAttempts] = React.useState(0);
+	const [autoRefreshing, setAutoRefreshing] = React.useState(false);
+	const [lightboxOpen, setLightboxOpen] = React.useState(false);
 
 	const handleClose = React.useCallback(() => {
 		router.push(paths.dashboard.receipts);
@@ -62,27 +109,31 @@ export function ReceiptModal({ open, receiptId }) {
 				const data = await res.json();
 				if (!active) return;
 				setReceipt(data);
-				// Fetch signed thumbnail URL for preview (preferred)
+				// Reset preview state before fetching
+				setThumbUrl(null);
+				setDownloadUrl(null);
+				setThumbTried(false);
+				setPreviewAttempts(0);
+				// Fetch signed thumbnail URL for preview (preferred) with retry on 409
 				try {
-					const tres = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`, {
-						headers: auth,
-					});
-					if (tres.ok) {
-						const { url } = await tres.json();
-						setThumbUrl(`${API_URL}${url}`);
+					const thumb = await fetchSignedUrlWithRetry(
+						`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
+						auth,
+						[400, 800, 1600, 2500]
+					);
+					if (active) {
+						setThumbTried(true);
+						if (thumb) setThumbUrl(thumb);
+						setPreviewAttempts((a) => a + 1);
 					}
 				} catch (error_) {
+					if (active) setThumbTried(true);
 					console.debug("thumbnail_url error", error_);
 				}
-				// Fallback: signed download URL
+				// Fallback: signed download URL with retry on 409
 				try {
-					const dres = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}/download_url`, {
-						headers: auth,
-					});
-					if (dres.ok) {
-						const { url } = await dres.json();
-						setDownloadUrl(`${API_URL}${url}`);
-					}
+					const dl = await fetchSignedUrlWithRetry(`/receipts/${encodeURIComponent(receiptId)}/download_url`, auth);
+					if (dl && active) setDownloadUrl(dl);
 				} catch (error_) {
 					console.debug("download_url error", error_);
 				}
@@ -99,31 +150,331 @@ export function ReceiptModal({ open, receiptId }) {
 		};
 	}, [open, receiptId, getToken]);
 
+	// Live patch updates from SSE (fired by receipts list component)
+	React.useEffect(() => {
+		if (!open || !receiptId) return;
+		function onUpdate(ev) {
+			const payload = ev.detail;
+			if (!payload || payload.receipt_id !== receiptId) return;
+			setReceipt((prev) => {
+				if (!prev || prev.id !== receiptId) return prev;
+				const next = { ...prev };
+				if (payload.status) next.status = String(payload.status).toLowerCase();
+				if (payload.progress && typeof payload.progress === "object") {
+					// Could store progress if modal needs it later
+				}
+				return next;
+			});
+		}
+		globalThis.addEventListener("receipt:update", onUpdate);
+		return () => globalThis.removeEventListener("receipt:update", onUpdate);
+	}, [open, receiptId]);
+
+	// Helper to refresh preview (manual or auto)
+	const refreshPreview = React.useCallback(
+		async (opts) => {
+			const force = opts && typeof opts.force === "boolean" ? opts.force : false;
+			if (!receiptId) return;
+			if (!force && (thumbUrl || downloadUrl)) return; // avoid redundant fetches
+			let token = null;
+			try {
+				token = await getToken?.();
+			} catch {
+				/* ignore */
+			}
+			const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
+			try {
+				const thumb = await fetchSignedUrlWithRetry(
+					`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
+					auth,
+					[400, 800, 1600]
+				);
+				setThumbTried(true);
+				if (thumb) setThumbUrl(thumb);
+				setPreviewAttempts((a) => a + 1);
+			} catch {
+				setThumbTried(true); /* ignore */
+			}
+			if (!thumbUrl && !downloadUrl) {
+				try {
+					const dl = await fetchSignedUrlWithRetry(`/receipts/${encodeURIComponent(receiptId)}/download_url`, auth);
+					if (dl) setDownloadUrl(dl);
+				} catch {
+					/* ignore */
+				}
+			}
+		},
+		[receiptId, getToken, thumbUrl, downloadUrl]
+	);
+
+	// Poll receipt while status is pending/processing to update details and attempt preview again
+	React.useEffect(() => {
+		if (!open || !receipt || !["pending", "processing"].includes((receipt.status || "").toLowerCase())) return;
+		let active = true;
+		let attempts = 0;
+		setAutoRefreshing(true);
+		const id = setInterval(async () => {
+			attempts += 1;
+			if (attempts > PREVIEW_MAX_AUTO_ATTEMPTS) {
+				clearInterval(id);
+				if (active) setAutoRefreshing(false);
+				return;
+			}
+			try {
+				let token = null;
+				try {
+					token = await getToken?.();
+				} catch {
+					/* ignore */
+				}
+				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
+				const res = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}`, {
+					headers: auth,
+					cache: "no-store",
+				});
+				if (res.ok) {
+					const data = await res.json();
+					if (active) setReceipt(data);
+					if (active && !thumbUrl && !downloadUrl) {
+						await refreshPreview();
+						if (thumbUrl || downloadUrl) {
+							clearInterval(id);
+							if (active) setAutoRefreshing(false);
+						}
+					}
+				}
+				const statusLower = (receipt?.status || "").toLowerCase();
+				if (!["pending", "processing"].includes(statusLower)) {
+					clearInterval(id);
+					if (active) setAutoRefreshing(false);
+				}
+			} catch {
+				/* ignore */
+			}
+		}, PREVIEW_AUTO_REFRESH_INTERVAL);
+		return () => {
+			active = false;
+			clearInterval(id);
+		};
+	}, [open, receipt, receiptId, refreshPreview, thumbUrl, downloadUrl, getToken]);
+
 	const ed = receipt && typeof receipt.extracted_data === "object" ? receipt.extracted_data : {};
 	const merchant = (ed && (ed.merchant ?? ed.vendor ?? ed.merchant_name)) || "—";
-	const address = ed && (ed.address || ed.location || null);
+	// Address can arrive as a string, structured object, or array. Normalize to a display string.
+	function formatAddress(addr) {
+		if (!addr) return null;
+		if (typeof addr === "string") {
+			const trimmed = addr.trim();
+			return trimmed || null;
+		}
+		if (Array.isArray(addr)) {
+			return formatAddress(addr.filter(Boolean).join(", "));
+		}
+		if (typeof addr === "object") {
+			// Common field variants
+			const fieldsOrder = [
+				"line1",
+				"line2",
+				"street1",
+				"street2",
+				"street",
+				"street_address",
+				"streetAddress",
+				"address1",
+				"address2",
+				"city",
+				"town",
+				"state",
+				"province",
+				"region",
+				"postal_code",
+				"postalCode",
+				"zip",
+				"zip_code",
+				"country",
+				"country_code",
+				"countryCode",
+				"raw",
+			];
+			const parts = [];
+			const seen = new Set();
+			for (const key of fieldsOrder) {
+				if (key in addr) {
+					let v = addr[key];
+					if (v && typeof v === "object") {
+						// Nested object: attempt flatten of its primitive values
+						const nestedVals = Object.values(v).filter((x) => typeof x === "string" && x.trim());
+						if (nestedVals.length > 0) v = nestedVals.join(" ");
+					}
+					if (typeof v === "string") {
+						const cleaned = v.trim();
+						if (cleaned && !seen.has(cleaned.toLowerCase())) {
+							seen.add(cleaned.toLowerCase());
+							parts.push(cleaned);
+						}
+					}
+				}
+			}
+			// If no ordered fields produced output, fall back to primitive stringifiable values.
+			if (parts.length === 0) {
+				const fallback = Object.values(addr)
+					.filter((v) => typeof v === "string" && v.trim())
+					.map((v) => v.trim());
+				const unique = [];
+				for (const f of fallback) {
+					if (!unique.includes(f)) unique.push(f);
+				}
+				if (unique.length > 0) return unique.join(", ");
+			}
+			return parts.length > 0 ? parts.join(", ") : null;
+		}
+		return null;
+	}
+	const rawAddress = ed && (ed.address || ed.location || ed.merchant_address || null);
+	const address = formatAddress(rawAddress);
 	const totalRaw = ed && (ed.total ?? ed.amount_total ?? ed.amount);
-	const total = parseAmount(totalRaw);
+	const totalParsed = parseAmount(totalRaw);
+	const shippingRaw = ed && (ed.shipping ?? ed.delivery ?? null);
+	const receivingRaw = ed && (ed.receiving ?? ed.handling ?? null);
+	const shippingAmount = parseAmount(shippingRaw) || 0;
+	const receivingAmount = parseAmount(receivingRaw) || 0;
+	const taxAmount = parseAmount(ed?.tax) || 0;
+	const explicitSubtotal = parseAmount(ed?.subtotal) || 0;
+	// (moved subtotal/discount inference below after lineItems & total definitions)
+
+	// Audit decision indicators
+	const auditDecision = receipt && typeof receipt.audit_decision === "object" ? receipt.audit_decision : null;
+	const needsAudit = Boolean(auditDecision?.needs_audit);
+	const auditMathError = Boolean(auditDecision?.math_error);
+	const amountOverLimit = Boolean(auditDecision?.amount_over_limit);
 	const lineItems = Array.isArray(ed?.items)
-		? ed.items.map((it, idx) => ({
-				id: String(idx + 1).padStart(3, "0"),
-				product: it.name || it.description || `Item ${idx + 1}`,
-				image: "/assets/product-1.png",
-				quantity: Number(it.qty || it.quantity || 1),
-				currency: "USD",
-				unitAmount: Number(it.unit_price || it.price || 0),
-				totalAmount: Number(it.total || it.amount || 0),
-			}))
+		? ed.items.map((it, idx) => {
+				const unitRaw = it.unit_price ?? it.price ?? it.unit ?? it.rate;
+				const qtyRaw = it.qty ?? it.quantity ?? 1;
+				const lineTotalRaw = it.total ?? it.amount ?? (unitRaw && qtyRaw ? unitRaw : 0);
+				const quantity = safeNum(qtyRaw, 1);
+				const unitAmount = parseAmount(unitRaw);
+				const totalAmount = parseAmount(lineTotalRaw) || (unitAmount && quantity ? unitAmount * quantity : 0);
+				return {
+					id: String(idx + 1).padStart(3, "0"),
+					product: it.name || it.description || `Item ${idx + 1}`,
+					image: "/assets/product-1.png",
+					quantity,
+					currency: "USD",
+					unitAmount,
+					totalAmount,
+				};
+			})
 		: [];
 
-	const payment = ed?.payment_method || null;
-	const paymentLabel = payment
-		? [payment.type, payment.brand && `(${payment.brand}${payment.last4 ? ` •••• ${payment.last4}` : ""})`]
-				.filter(Boolean)
-				.join(" ")
-		: "—";
+	// If header total parsed as 0 but line items have sum, use sum as fallback.
+	const lineItemsSum = lineItems.reduce((acc, li) => acc + (Number.isFinite(li.totalAmount) ? li.totalAmount : 0), 0);
+	const total = totalParsed > 0 ? totalParsed : lineItemsSum;
 
-	const previewSrc = thumbUrl || downloadUrl || null;
+	// Attempt to infer subtotal if not explicitly provided (depends on lineItemsSum & total)
+	let inferredSubtotal = explicitSubtotal;
+	if (!inferredSubtotal) {
+		if (lineItemsSum > 0) {
+			const candidate = lineItemsSum - (taxAmount + shippingAmount + receivingAmount);
+			if (candidate > 0) inferredSubtotal = candidate;
+		}
+		if (!inferredSubtotal && total > 0) {
+			const candidate2 = total - (taxAmount + shippingAmount + receivingAmount);
+			if (candidate2 > 0) inferredSubtotal = candidate2;
+		}
+	}
+	// Discount: explicit or derived difference between components and provided total
+	const explicitDiscount = parseAmount(ed?.discount) || parseAmount(ed?.discounts) || parseAmount(ed?.saving) || 0;
+	let derivedDiscount = 0;
+	if (total > 0) {
+		const sumComponents = inferredSubtotal + taxAmount + shippingAmount + receivingAmount;
+		if (sumComponents > 0) {
+			const diff = sumComponents - total;
+			if (diff > 0.02) derivedDiscount = diff; // treat positive difference as discount
+		}
+	}
+	const discountAmount = explicitDiscount || derivedDiscount;
+	// Math validation client-side (mirrors backend logic w/ discount consideration)
+	let mathMismatch = false;
+	if (inferredSubtotal > 0 && total > 0) {
+		const expected = inferredSubtotal + taxAmount + shippingAmount + receivingAmount - discountAmount;
+		if (Math.abs(expected - total) > 0.02) mathMismatch = true;
+	}
+
+	// Derive payment method (brand + last4) similar to receipts table
+	const pmSource = ed.payment_method || ed.payment || ed.card || null;
+	let paymentMethod = null;
+	if (pmSource && typeof pmSource === "object") {
+		const rawBrand =
+			pmSource.brand || pmSource.type || pmSource.card_brand || pmSource.scheme || pmSource.network || "";
+		const norm = String(rawBrand)
+			.toLowerCase()
+			.replaceAll(/[^a-z0-9]/g, "");
+		const brandMap = {
+			visa: "visa",
+			mastercard: "mastercard",
+			mc: "mastercard",
+			americanexpress: "amex",
+			amex: "amex",
+			applepay: "applepay",
+			apple: "applepay",
+			googlepay: "googlepay",
+			google: "googlepay",
+		};
+		const type = brandMap[norm] || norm || null;
+		const last4 =
+			pmSource.last4 ||
+			pmSource.card_last4 ||
+			(pmSource.number && String(pmSource.number).slice(-4)) ||
+			(pmSource.card_number && String(pmSource.card_number).slice(-4)) ||
+			null;
+		if (type) {
+			paymentMethod = { type, brand: rawBrand, last4 };
+		}
+	}
+	const paymentMapping = {
+		mastercard: { name: "Mastercard", logo: "/assets/payment-method-1.png" },
+		visa: { name: "Visa", logo: "/assets/payment-method-2.png" },
+		amex: { name: "American Express", logo: "/assets/payment-method-3.png" },
+		applepay: { name: "Apple Pay", logo: "/assets/payment-method-4.png" },
+		googlepay: { name: "Google Pay", logo: "/assets/payment-method-5.png" },
+	};
+	const paymentDisplay = paymentMethod ? (
+		<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+			{paymentMapping[paymentMethod.type]?.logo ? (
+				<Avatar sx={{ bgcolor: "var(--mui-palette-background-paper)", boxShadow: "var(--mui-shadows-8)" }}>
+					<Box
+						component="img"
+						src={paymentMapping[paymentMethod.type].logo}
+						alt={paymentMapping[paymentMethod.type].name}
+						sx={{ borderRadius: "50px", height: "auto", width: 35 }}
+					/>
+				</Avatar>
+			) : null}
+			<Box>
+				<Typography variant="body2">
+					{paymentMapping[paymentMethod.type]?.name || paymentMethod.brand || "Unknown"}
+				</Typography>
+				{paymentMethod.last4 ? (
+					<Typography color="text.secondary" variant="body2">
+						**** {paymentMethod.last4}
+					</Typography>
+				) : null}
+			</Box>
+		</Stack>
+	) : (
+		"—"
+	);
+
+	// Simple cache bust: append a version param so refreshed signed URLs always reload
+	const basePreviewSrc = thumbUrl || downloadUrl || null;
+	const previewSrc = React.useMemo(() => {
+		if (!basePreviewSrc) return null;
+		const hasQuery = basePreviewSrc.includes("?");
+		return `${basePreviewSrc}${hasQuery ? "&" : "?"}v=${Date.now()}`; // avoid stale cached image
+	}, [basePreviewSrc]);
+	const showPlaceholder = !loading && !error && !previewSrc && thumbTried;
+	const showSkeleton = !loading && !error && !previewSrc && !thumbTried; // initial wait before we have tried fetching
 
 	return (
 		<Dialog
@@ -170,7 +521,7 @@ export function ReceiptModal({ open, receiptId }) {
 									{ key: "Merchant", value: <Link variant="subtitle2">{merchant}</Link> },
 									{
 										key: "Address",
-										value: address ? <Typography variant="subtitle2">{String(address)}</Typography> : "—",
+										value: address ? <Typography variant="subtitle2">{address}</Typography> : "—",
 									},
 									{
 										key: "Date",
@@ -190,7 +541,24 @@ export function ReceiptModal({ open, receiptId }) {
 											/>
 										),
 									},
-									{ key: "Payment Method", value: paymentLabel },
+									{
+										key: "Audit",
+										value: needsAudit ? (
+											<Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+												{auditMathError && (
+													<Tooltip title="Math mismatch detected between components and total">
+														<Chip color="error" size="small" label="Math Error" />
+													</Tooltip>
+												)}
+												{amountOverLimit && <Chip color="warning" size="small" label="Over Limit" />}
+											</Stack>
+										) : (
+											<Typography variant="body2" color="text.secondary">
+												None
+											</Typography>
+										),
+									},
+									{ key: "Payment Method", value: paymentDisplay },
 									{ key: "Filename", value: receipt?.filename || "—" },
 								].map((item) => (
 									<PropertyItem key={item.key} name={item.key} value={item.value} />
@@ -200,15 +568,105 @@ export function ReceiptModal({ open, receiptId }) {
 						{previewSrc ? (
 							<Card sx={{ borderRadius: 1 }} variant="outlined">
 								<Box sx={{ p: 2 }}>
-									<Box
-										component="img"
-										src={previewSrc}
-										alt="Receipt preview"
-										sx={{ width: "100%", height: "auto", borderRadius: 1 }}
-									/>
+									<Box sx={{ position: "relative" }}>
+										<Box
+											component="img"
+											src={previewSrc}
+											alt="Receipt preview"
+											onClick={() => setLightboxOpen(true)}
+											sx={{
+												maxWidth: "100%",
+												width: "100%",
+												height: "auto",
+												maxHeight: 420,
+												objectFit: "contain",
+												display: "block",
+												margin: "0 auto",
+												borderRadius: 1,
+												cursor: "zoom-in",
+												boxShadow: 1,
+												bgcolor: "background.default",
+											}}
+										/>
+										<Tooltip title="Zoom">
+											<IconButton
+												color="primary"
+												onClick={() => setLightboxOpen(true)}
+												size="small"
+												sx={{ position: "absolute", top: 8, right: 8, bgcolor: "background.paper", boxShadow: 2 }}
+											>
+												<MagnifyingGlassPlus size={16} />
+											</IconButton>
+										</Tooltip>
+									</Box>
+								</Box>
+							</Card>
+						) : showSkeleton ? (
+							<Card sx={{ borderRadius: 1 }} variant="outlined">
+								<Box sx={{ p: 2 }}>
+									<Skeleton variant="rectangular" width="100%" height={320} sx={{ borderRadius: 1 }} />
+									<Box sx={{ mt: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+										<Typography variant="caption" color="text.secondary">
+											Loading preview…
+										</Typography>
+										{autoRefreshing && (
+											<Typography variant="caption" color="text.secondary">
+												Attempt {previewAttempts + 1}/{PREVIEW_MAX_AUTO_ATTEMPTS}
+											</Typography>
+										)}
+									</Box>
+								</Box>
+							</Card>
+						) : showPlaceholder ? (
+							<Card sx={{ borderRadius: 1 }} variant="outlined">
+								<Box sx={{ p: 4, display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+									<Tooltip
+										title={
+											previewAttempts >= PREVIEW_MAX_AUTO_ATTEMPTS
+												? "Max attempts reached"
+												: autoRefreshing
+													? "Still trying to generate preview"
+													: "You can try refreshing the preview"
+										}
+									>
+										<Typography variant="body2" color="text.secondary">
+											No preview available
+										</Typography>
+									</Tooltip>
+									<Typography variant="caption" color="text.secondary" align="center">
+										(The file may still be processing or is an unsupported format)
+									</Typography>
+									<Box sx={{ mt: 2 }}>
+										<Button
+											size="small"
+											variant="outlined"
+											onClick={() => refreshPreview({ force: true })}
+											disabled={autoRefreshing && previewAttempts < PREVIEW_MAX_AUTO_ATTEMPTS}
+										>
+											Refresh preview
+										</Button>
+									</Box>
 								</Box>
 							</Card>
 						) : null}
+						{lightboxOpen && previewSrc && (
+							<Dialog open onClose={() => setLightboxOpen(false)} maxWidth="md" fullWidth>
+								<DialogContent sx={{ position: "relative", bgcolor: "black", p: 0 }}>
+									<IconButton
+										onClick={() => setLightboxOpen(false)}
+										sx={{ position: "absolute", top: 8, right: 8, color: "white", zIndex: 1 }}
+									>
+										<XIcon size={20} />
+									</IconButton>
+									<Box
+										component="img"
+										src={previewSrc}
+										alt="Receipt full preview"
+										sx={{ width: "100%", height: "auto", display: "block", objectFit: "contain" }}
+									/>
+								</DialogContent>
+							</Dialog>
+						)}
 					</Stack>
 					<Stack spacing={3}>
 						<Typography variant="h6">Line items</Typography>
@@ -222,27 +680,84 @@ export function ReceiptModal({ open, receiptId }) {
 									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
 										<Typography variant="body2">Subtotal</Typography>
 										<Typography variant="body2">
-											{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total || 0)}
+											{inferredSubtotal
+												? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+														inferredSubtotal
+													)
+												: "-"}
 										</Typography>
 									</Stack>
 									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
 										<Typography variant="body2">Discount</Typography>
-										<Typography variant="body2">-</Typography>
+										<Typography variant="body2" color={discountAmount ? "success.main" : undefined}>
+											{discountAmount
+												? `- ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(discountAmount)}`
+												: "-"}
+										</Typography>
 									</Stack>
 									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
 										<Typography variant="body2">Shipping</Typography>
-										<Typography variant="body2">-</Typography>
+										<Typography variant="body2">
+											{shippingAmount
+												? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(shippingAmount)
+												: "-"}
+										</Typography>
+									</Stack>
+									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+										<Typography variant="body2">Receiving</Typography>
+										<Typography variant="body2">
+											{receivingAmount
+												? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(receivingAmount)
+												: "-"}
+										</Typography>
 									</Stack>
 									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
 										<Typography variant="body2">Taxes</Typography>
-										<Typography variant="body2">-</Typography>
+										<Typography variant="body2">
+											{taxAmount
+												? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(taxAmount)
+												: "-"}
+										</Typography>
 									</Stack>
 									<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
 										<Typography variant="subtitle1">Total</Typography>
-										<Typography variant="subtitle1">
-											{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total || 0)}
-										</Typography>
+										<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+											<Typography variant="subtitle1">
+												{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total)}
+											</Typography>
+											{(mathMismatch || auditMathError) && (
+												<Tooltip title="The sum of components does not match total (see math)">
+													<Chip color="error" size="small" label="Mismatch" />
+												</Tooltip>
+											)}
+										</Stack>
 									</Stack>
+									{receipt?.status === "failed" && (
+										<Box sx={{ pt: 1, display: "flex", justifyContent: "flex-end" }}>
+											<Button
+												size="small"
+												variant="outlined"
+												onClick={async () => {
+													try {
+														let token = null;
+														try {
+															token = await getToken?.();
+														} catch {
+															/* silent token fetch failure */
+														}
+														await fetch(`${API_URL}/receipts/${encodeURIComponent(receipt.id)}/reprocess`, {
+															method: "POST",
+															headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+														});
+													} catch {
+														/* silent reprocess failure */
+													}
+												}}
+											>
+												Reprocess
+											</Button>
+										</Box>
+									)}
 								</Stack>
 							</Box>
 						</Card>

@@ -6,6 +6,7 @@ import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
 import IconButton from "@mui/material/IconButton";
+import LinearProgress from "@mui/material/LinearProgress";
 import Link from "@mui/material/Link";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -28,14 +29,63 @@ function toDisplayRow(r) {
 	const merchant = ed.merchant ?? ed.vendor ?? ed.merchant_name ?? "—";
 	const totalRaw = ed.total ?? ed.amount_total ?? ed.amount;
 	const totalAmount = parseAmount(totalRaw);
+
+	// Transaction date: prefer extracted time value if parsable, else fallback to created_at
+	let transactionDate = new Date(r.created_at);
+	const timeRaw = ed.time || ed.transaction_time || ed.transactionDate || null;
+	if (timeRaw) {
+		// Attempt parse with dayjs; fallback to Date constructor
+		const candidate = dayjs(timeRaw);
+		if (candidate.isValid()) {
+			transactionDate = candidate.toDate();
+		} else {
+			const alt = new Date(timeRaw);
+			if (!Number.isNaN(alt.getTime())) transactionDate = alt;
+		}
+	}
+
+	// Derive payment method (brand + last4) if present in extracted data
+	const pmSource = ed.payment_method || ed.payment || ed.card || null;
+	let paymentMethod = null;
+	if (pmSource && typeof pmSource === "object") {
+		// candidate brand/type fields
+		const rawBrand =
+			pmSource.brand || pmSource.type || pmSource.card_brand || pmSource.scheme || pmSource.network || "";
+		const norm = String(rawBrand)
+			.toLowerCase()
+			.replaceAll(/[^a-z0-9]/g, "");
+		const brandMap = {
+			visa: "visa",
+			mastercard: "mastercard",
+			mc: "mastercard",
+			americanexpress: "amex",
+			amex: "amex",
+			applepay: "applepay",
+			apple: "applepay",
+			googlepay: "googlepay",
+			google: "googlepay",
+		};
+		const type = brandMap[norm] || norm || null;
+		const last4 =
+			pmSource.last4 ||
+			pmSource.card_last4 ||
+			(pmSource.number && String(pmSource.number).slice(-4)) ||
+			(pmSource.card_number && String(pmSource.card_number).slice(-4)) ||
+			null;
+		if (type) {
+			paymentMethod = { type, brand: rawBrand, last4 };
+		}
+	}
 	return {
 		id: r.id,
 		createdAt: new Date(r.created_at),
+		transactionDate,
 		lineItems: 1,
-		paymentMethod: null,
+		paymentMethod,
 		currency: "USD",
 		totalAmount,
 		status: r.status,
+		extractionProgress: r.extraction_progress ?? 0,
 		customer: { name: merchant, avatar: undefined, email: undefined },
 	};
 }
@@ -56,7 +106,7 @@ const columns = [
 					<Typography variant="caption">{dayjs(row.createdAt).format("MMM").toUpperCase()}</Typography>
 					<Typography variant="h6">{dayjs(row.createdAt).format("D")}</Typography>
 				</Box>
-				<div>
+				<div style={{ minWidth: 160 }}>
 					<Link
 						color="text.primary"
 						component={RouterLink}
@@ -64,14 +114,24 @@ const columns = [
 						sx={{ cursor: "pointer" }}
 						variant="subtitle2"
 					>
-						{row.id}
+						{row.customer.name}
 					</Link>
-					<Typography color="text.secondary" variant="body2">
-						{row.lineItems} products •{" "}
-						<Box component="span" sx={{ whiteSpace: "nowrap" }}>
-							{new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency }).format(row.totalAmount)}
-						</Box>
+					<Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.3 }}>
+						{row.totalAmount != null && !Number.isNaN(row.totalAmount)
+							? new Intl.NumberFormat("en-US", { style: "currency", currency: row.currency || "USD" }).format(
+									row.totalAmount
+								)
+							: "—"}
 					</Typography>
+					{(row.status === "pending" || row.status === "processing") && (
+						<Box sx={{ mt: 0.5 }}>
+							<LinearProgress
+								variant={row.extractionProgress > 0 ? "determinate" : "indeterminate"}
+								value={row.extractionProgress || 0}
+								sx={{ height: 6, borderRadius: 3, width: 140, bgcolor: "background.default" }}
+							/>
+						</Box>
+					)}
 				</div>
 			</Stack>
 		),
@@ -112,18 +172,15 @@ const columns = [
 	},
 	{
 		formatter: (row) => (
-			<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-				<Avatar src={row.customer.avatar} />
-				<div>
-					<Typography variant="subtitle2">{row.customer.name}</Typography>
-					<Typography color="text.secondary" variant="body2">
-						{row.customer.email}
-					</Typography>
-				</div>
+			<Stack spacing={0.5}>
+				<Typography variant="subtitle2">{dayjs(row.transactionDate).format("MMM D, YYYY")}</Typography>
+				<Typography color="text.secondary" variant="caption">
+					{dayjs(row.transactionDate).format("hh:mm A")}
+				</Typography>
 			</Stack>
 		),
-		name: "Merchant",
-		width: "250px",
+		name: "Date",
+		width: "170px",
 	},
 	{
 		formatter: (row) => {
