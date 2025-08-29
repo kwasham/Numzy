@@ -54,7 +54,7 @@ class ExtractionService:
     """
 
     def __init__(self) -> None:
-        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-5-nano")
+        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-5")
         self.debug: bool = os.getenv("EXTRACTION_DEBUG", "0").lower() in {"1", "true", "yes"}
         self.agents_available = HAS_AGENTS
         if self.debug:
@@ -65,18 +65,49 @@ class ExtractionService:
         return base64.b64encode(data).decode("utf-8")
 
     async def extract(self, file_data: bytes, filename: str, prompt: Optional[str] = None, model: Optional[str] = None) -> ReceiptDetails:
-        """Extract receipt details from an image or PDF.
+        """Extract receipt details from an image or PDF with fallback + retry heuristics.
 
-        :param file_data: Raw bytes of the uploaded file
-        :param filename: Original filename (used to detect PDF files)
-        :param prompt: Custom prompt string to override the default
-        :param model: Optional override of the LLM model name
-        :returns: ``ReceiptDetails`` object containing extracted fields
-        :raises HTTPException: If the file is a PDF with no pages
+        Strategy:
+        1. Normalise / preprocess image (PDF -> first page image, EXIF orientation already handled upstream if any).
+        2. Attempt extraction with primary model (``EXTRACTION_MODEL`` or provided override).
+        3. If result appears *minimal* (only merchant or empty) automatically retry a small cascade of fallback
+           models (configurable via ``EXTRACTION_MODEL_FALLBACKS`` env var or a sensible default).
+        4. Return the first non-minimal result; otherwise return the last attempt.
+
+        A result is considered minimal when it lacks items AND lacks total/subtotal/tax while merchant alone may be present.
         """
-        # Use override model if provided
-        model_name = model or self.model
-        # Convert PDFs to images – try shared helper, else inline fallback to avoid hard crash if worker not reloaded
+        # Resolve primary + fallback models early
+        primary_model = (model or self.model or "gpt-4o-mini").strip()
+        # Some environments may still use placeholder / deprecated names; map obvious placeholders.
+        placeholder_map = {
+            "gpt-5": "gpt-4o-mini",  # speculative placeholder -> widely available lightweight model
+            "gpt5": "gpt-4o-mini",
+        }
+        primary_model = placeholder_map.get(primary_model.lower(), primary_model)
+        fb_env = os.getenv("EXTRACTION_MODEL_FALLBACKS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini")
+        fallback_models = [m.strip() for m in fb_env.split(",") if m.strip()]
+        # Ensure primary is first and unique ordering
+        cascade: list[str] = []
+        seen = set()
+        for m in [primary_model] + fallback_models:
+            key = m.lower()
+            if key in seen:
+                continue
+            cascade.append(m)
+            seen.add(key)
+
+        def _is_minimal(details: ReceiptDetails) -> bool:
+            try:
+                if details.items and len(details.items) > 0:
+                    return False
+                rich_fields = [details.total, details.subtotal, details.tax, details.shipping, details.receiving]
+                if any(f for f in rich_fields if f not in (None, "")):
+                    return False
+                # Merchant alone or completely empty qualifies as minimal
+                return True
+            except Exception:
+                return True
+        # Convert PDFs to images – try shared helper, else inline fallback
         if filename.lower().endswith(".pdf"):
             images: list[bytes] = []
             try:
@@ -110,164 +141,163 @@ class ExtractionService:
             if not images:
                 raise HTTPException(status_code=400, detail="PDF has no pages or could not be rendered")
             file_data = images[0]
-        # Preprocess image (resize, grayscale) to improve OCR results
+        # Preprocess image (resize, grayscale, orientation) to improve OCR results
         processed = preprocess_image(file_data)
         b64 = self._image_to_base64(processed)
         # Build the agent with the default or custom prompt
         instructions = prompt or get_default_extraction_prompt()
         if self.debug:
-            logger.info("[extraction] starting extract filename=%s size=%d model=%s", filename, len(file_data), model_name)
+            logger.info("[extraction] starting extract filename=%s size=%d cascade=%s", filename, len(file_data), cascade)
 
-        # ------------------------------ Primary path: Agents SDK ------------------------------
-        if self.agents_available:
+        last_details: ReceiptDetails | None = None
+        last_error: Exception | None = None
+
+        # Inner function performing a single attempt (keeps original logic) ------------------
+        async def _attempt(model_name: str) -> ReceiptDetails:
+            if self.debug:
+                logger.info("[extraction][attempt] model=%s", model_name)
+            # Stash original self.model when calling; some SDK paths reference self.model implicitly
+            # but we explicitly pass model_name to downstream calls where possible.
+            # ------------------------------ Primary path: Agents SDK ------------------------------
+            if self.agents_available:
+                try:
+                    from agents import Agent, Runner  # type: ignore
+                    agent = Agent(
+                        name="receipt_extraction_agent",
+                        instructions=instructions,
+                        model=model_name,
+                        output_type=ReceiptDetails,
+                    )
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_image",
+                                    "detail": "auto",
+                                    "image_url": f"data:image/jpeg;base64,{b64}",
+                                },
+                            ],
+                        },
+                        {
+                            "role": "user",
+                            "content": "Extract the receipt details from this image according to the ReceiptDetails schema.",
+                        },
+                    ]
+                    result = await Runner.run(agent, messages)
+                    if self.debug:
+                        logger.info("[extraction][attempt] Agents SDK succeeded model=%s", model_name)
+                    return result.final_output
+                except Exception as exc:
+                    if self.debug:
+                        logger.warning("[extraction][attempt] Agents SDK failed model=%s err=%s", model_name, exc)
+                    # continue to fallback logic below
+            else:
+                if self.debug:
+                    logger.info("[extraction][attempt] Agents SDK unavailable; using Responses/Chat path")
+
+            # ------------------------------ Fallback 1: OpenAI Responses API ------------------------------
             try:
-                from agents import Agent, Runner  # type: ignore
-                agent = Agent(
-                    name="receipt_extraction_agent",
-                    instructions=instructions,
+                from openai import OpenAI  # type: ignore
+                client = OpenAI()
+                schema: dict[str, Any] = ReceiptDetails.model_json_schema()
+                if self.debug:
+                    logger.info("[extraction][attempt] responses api model=%s", model_name)
+                response = client.responses.create(
                     model=model_name,
-                    output_type=ReceiptDetails,
+                    input=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                                {"type": "input_text", "text": instructions + "\nReturn ONLY valid JSON matching the schema."},
+                            ],
+                        }
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {"name": "ReceiptDetails", "schema": schema, "strict": True},
+                    },
                 )
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_image",
-                                "detail": "auto",
-                                "image_url": f"data:image/jpeg;base64,{b64}",
-                            },
-                        ],
-                    },
-                    {
-                        "role": "user",
-                        "content": "Extract the receipt details from this image according to the ReceiptDetails schema.",
-                    },
-                ]
-                result = await Runner.run(agent, messages)
-                if self.debug:
-                    logger.info("[extraction] Agents SDK succeeded")
-                return result.final_output
-            except Exception as exc:
-                if self.debug:
-                    logger.warning("[extraction] Agents SDK failed: %s", exc)
-                else:
-                    logger.warning(f"Agents SDK path failed ({exc}); falling back to OpenAI Responses API structured extraction")
-        else:
-            if self.debug:
-                logger.info("[extraction] Agents SDK not available; skipping directly to Responses fallback")
-
-        # ------------------------------ Fallback 1: OpenAI Responses API with JSON schema ------------------------------
-        try:
-            from openai import OpenAI  # type: ignore
-            client = OpenAI()
-
-            # Build JSON schema from Pydantic model (simplify nested defs for OpenAI constraints)
-            schema: dict[str, Any] = ReceiptDetails.model_json_schema()
-            # Ensure top-level name
-            if self.debug:
-                logger.info("[extraction] attempting Responses API fallback")
-            response = client.responses.create(
-                model=model_name,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
-                            {"type": "input_text", "text": instructions + "\nReturn ONLY valid JSON matching the schema."},
-                        ],
-                    }
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "ReceiptDetails",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                },
-            )
-
-            # Extract JSON text from response
-            raw_json_text = ""
-            try:  # cope with evolving SDK structure
-                # Newer SDKs: response.output is list of blocks
-                output_blocks = getattr(response, "output", []) or []  # type: ignore[attr-defined]
-                for block in output_blocks:
-                    block_content = getattr(block, "content", []) or []
-                    for piece in block_content:
-                        p_type = getattr(piece, "type", None)
-                        if p_type in ("output_text", "text"):
-                            raw_json_text += getattr(piece, "text", "")
-                        elif p_type == "tool_call" and self.debug:
-                            logger.info("[extraction] responses tool_call piece ignored")
+                raw_json_text = ""
+                try:
+                    output_blocks = getattr(response, "output", []) or []  # type: ignore[attr-defined]
+                    for block in output_blocks:
+                        for piece in getattr(block, "content", []) or []:
+                            p_type = getattr(piece, "type", None)
+                            if p_type in ("output_text", "text"):
+                                raw_json_text += getattr(piece, "text", "")
+                    if not raw_json_text:
+                        raw_json_text = getattr(response, "output_text", "")  # type: ignore[attr-defined]
+                except Exception as inner_exc:  # pragma: no cover - diagnostic only
+                    if self.debug:
+                        logger.warning("[extraction][attempt] responses traversal error model=%s err=%s", model_name, inner_exc)
                 if not raw_json_text:
-                    # Some SDK versions expose consolidated output_text
-                    raw_json_text = getattr(response, "output_text", "")  # type: ignore[attr-defined]
-            except Exception as ie:
-                if self.debug:
-                    logger.warning("[extraction] responses content traversal error: %s", ie)
-
-            if not raw_json_text:
-                if self.debug:
-                    logger.warning("[extraction] Responses fallback produced no text; will try Chat Completions fallback")
-                else:
-                    logger.error("Responses fallback produced no text; trying next fallback")
-                raise RuntimeError("empty responses output")
-
-            try:
+                    raise RuntimeError("empty responses output")
                 data = json.loads(raw_json_text)
-            except json.JSONDecodeError as je:
-                if self.debug:
-                    logger.warning("[extraction] responses JSON decode failed: %s", je)
-                raise
-
-            try:
                 rd = ReceiptDetails.model_validate(data)
                 if self.debug:
-                    logger.info("[extraction] Responses fallback succeeded")
+                    logger.info("[extraction][attempt] responses api succeeded model=%s", model_name)
                 return rd
-            except Exception as ve:
+            except Exception as exc2:
                 if self.debug:
-                    logger.warning("[extraction] responses validation failed: %s", ve)
-                raise
-        except Exception as exc2:
-            if self.debug:
-                logger.warning("[extraction] Responses fallback failed: %s", exc2)
-
-        # ------------------------------ Fallback 2: Chat Completions with JSON schema ------------------------------
-        try:
-            from openai import OpenAI  # type: ignore
-            client2 = OpenAI()
-            if self.debug:
-                logger.info("[extraction] attempting Chat Completions fallback")
-            schema = ReceiptDetails.model_json_schema()
-            chat_resp = client2.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
-                            {"type": "text", "text": instructions + "\nReturn ONLY JSON that matches the schema."},
-                        ],
-                    }
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {"name": "ReceiptDetails", "schema": schema, "strict": True},
-            })
-            json_text = chat_resp.choices[0].message.content  # type: ignore[attr-defined]
-            if isinstance(json_text, list):  # some SDK versions return list of parts
-                json_text = "".join(getattr(p, "text", "") for p in json_text)
-            data2 = json.loads(json_text)
-            rd2 = ReceiptDetails.model_validate(data2)
-            if self.debug:
-                logger.info("[extraction] Chat completions fallback succeeded")
-            return rd2
-        except Exception as exc3:
-            if self.debug:
-                logger.error("[extraction] All extraction paths failed: %s", exc3)
-            else:
-                logger.error(f"All extraction paths failed: {exc3}")
+                    logger.warning("[extraction][attempt] responses api failed model=%s err=%s", model_name, exc2)
+            # ------------------------------ Fallback 2: Chat Completions ------------------------------
+            try:
+                from openai import OpenAI  # type: ignore
+                client2 = OpenAI()
+                if self.debug:
+                    logger.info("[extraction][attempt] chat completions model=%s", model_name)
+                schema = ReceiptDetails.model_json_schema()
+                chat_resp = client2.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                                {"type": "text", "text": instructions + "\nReturn ONLY JSON that matches the schema."},
+                            ],
+                        }
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {"name": "ReceiptDetails", "schema": schema, "strict": True},
+                })
+                json_text = chat_resp.choices[0].message.content  # type: ignore[attr-defined]
+                if isinstance(json_text, list):
+                    json_text = "".join(getattr(p, "text", "") for p in json_text)
+                data2 = json.loads(json_text)
+                rd2 = ReceiptDetails.model_validate(data2)
+                if self.debug:
+                    logger.info("[extraction][attempt] chat completions succeeded model=%s", model_name)
+                return rd2
+            except Exception as exc3:
+                if self.debug:
+                    logger.warning("[extraction][attempt] chat completions failed model=%s err=%s", model_name, exc3)
+            # All attempts failed for this model
             return ReceiptDetails()
+
+        # Iterate cascade
+        for mdl in cascade:
+            try:
+                details = await _attempt(mdl)
+                last_details = details
+                if not _is_minimal(details):
+                    if self.debug:
+                        logger.info("[extraction] accepted model=%s (non-minimal)", mdl)
+                    return details
+                else:
+                    if self.debug:
+                        logger.warning("[extraction] minimal result model=%s; trying next fallback", mdl)
+            except Exception as attempt_exc:  # pragma: no cover - defensive
+                last_error = attempt_exc
+                if self.debug:
+                    logger.warning("[extraction] attempt failed model=%s err=%s", mdl, attempt_exc)
+                continue
+
+        # All attempts yielded minimal or failed; return last (possibly empty)
+        if self.debug and last_details is not None:
+            logger.warning("[extraction] returning minimal result after cascade models=%s last_error=%s", cascade, last_error)
+        return last_details or ReceiptDetails()
+        # End extract

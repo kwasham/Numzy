@@ -40,8 +40,98 @@ from app.services.cache import (
 )
 import asyncio
 import json
+import httpx
+from app.core.security import decode_clerk_jwt, CLERK_SECRET_KEY, CLERK_API_URL
+from app.models.enums import PlanType
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
+
+
+# ---------------------------------------------------------------------------
+# Optional query-token authentication helper (parity with SSE stream endpoint)
+# ---------------------------------------------------------------------------
+async def user_with_optional_token(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    token: str | None = Query(None),
+):
+    """Dependency that authenticates via Authorization header or `?token=` query.
+
+    We cannot invoke FastAPI dependency functions (`get_user`) directly because
+    that bypasses their internal dependency resolution, returning `Depends`
+    objects. Instead we inline minimal logic: if an Authorization header is
+    present we treat its Bearer token exactly the same as a query token.
+    """
+    # Dev bypass: fabricate / fetch dev user
+    if settings.DEV_AUTH_BYPASS:
+        result = await db.execute(select(User).where(User.email == "dev@example.com"))
+        user = result.scalar_one_or_none()
+        if user is None:
+            user = User(
+                clerk_id="dev_clerk_id_12345",
+                email="dev@example.com",
+                name="Dev User",
+                plan=PlanType.FREE,
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        return user
+
+    auth_header = request.headers.get("Authorization")
+    bearer_token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        bearer_token = auth_header.split(" ", 1)[1]
+    jwt_token = bearer_token or token
+    if not jwt_token:
+        raise HTTPException(status_code=401, detail="Missing auth token")
+
+    payload = decode_clerk_jwt(jwt_token)
+    clerk_user_id = payload.get("sub")
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
+
+    # Lookup by clerk_id
+    result = await db.execute(select(User).where(User.clerk_id == clerk_user_id))
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+
+    # Fetch from Clerk to build local record
+    if not CLERK_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Clerk secret key not configured")
+    async with httpx.AsyncClient(timeout=5) as client:
+        resp = await client.get(
+            f"{CLERK_API_URL}/users/{clerk_user_id}",
+            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Clerk user not found")
+    clerk_user = resp.json()
+    email = (
+        clerk_user.get("email_addresses", [{}])[0].get("email_address")
+        or clerk_user.get("email_address")
+    )
+    first = clerk_user.get("first_name", "")
+    last = clerk_user.get("last_name", "")
+    name = f"{first} {last}".strip() or email
+    if not email:
+        raise HTTPException(status_code=400, detail="Clerk user missing email")
+    # Existing by email (backfill clerk_id)
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user:
+        if not getattr(user, "clerk_id", None):
+            user.clerk_id = clerk_user_id  # type: ignore[attr-defined]
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        return user
+    user = User(email=email, name=name, clerk_id=clerk_user_id, plan=PlanType.FREE)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
 
 
 @router.post("", response_model=ReceiptRead)
@@ -49,7 +139,7 @@ async def upload_receipt(
     request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> ReceiptRead:
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
@@ -154,7 +244,7 @@ async def upload_receipt(
 async def upload_receipts_batch(
     files: List[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> List[ReceiptRead]:
     """Upload multiple receipts in one request.
 
@@ -255,7 +345,7 @@ async def upload_receipts_batch(
 async def reprocess_receipt(
     receipt_id: int,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> ReceiptRead:
     """Requeue background processing for an existing receipt owned by the user."""
     # Tier-aware rate limit: per-plan reprocess per minute
@@ -301,7 +391,7 @@ async def reprocess_receipt(
 @router.get("", response_model=List[ReceiptRead])
 async def list_receipts(
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> List[ReceiptRead]:
@@ -326,12 +416,16 @@ class ReceiptSummary(BaseModel):
     # minimal merchant & total hints (optional)
     merchant: str | None = None
     total: float | None = None
+    # minimal payment method hints
+    payment_type: str | None = None
+    payment_brand: str | None = None
+    payment_last4: str | None = None
 
 
 @router.get("/summary", response_model=List[ReceiptSummary])
 async def list_receipts_summary(
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> List[ReceiptSummary]:
@@ -362,6 +456,9 @@ async def list_receipts_summary(
         (rid, fname, status, created_at, updated_at, extraction_progress, audit_progress, extracted_data) = row
         merchant = None
         total = None
+        payment_type = None
+        payment_brand = None
+        payment_last4 = None
         try:
             if isinstance(extracted_data, dict):
                 merchant = (
@@ -385,6 +482,52 @@ async def list_receipts_summary(
                             total = float(num)
                     except Exception:
                         pass
+                # payment inference (mirror frontend logic but minimal)
+                pm_source = (
+                    extracted_data.get("payment_method")
+                    or extracted_data.get("payment")
+                    or extracted_data.get("card")
+                )
+                if isinstance(pm_source, dict):
+                    raw_brand = (
+                        pm_source.get("brand")
+                        or pm_source.get("type")
+                        or pm_source.get("card_brand")
+                        or pm_source.get("scheme")
+                        or pm_source.get("network")
+                        or ""
+                    )
+                    norm = str(raw_brand).lower().replace(" ", "").replace("-", "").replace("_", "")
+                    brand_map = {
+                        "visa": "visa",
+                        "mastercard": "mastercard",
+                        "mc": "mastercard",
+                        "americanexpress": "amex",
+                        "amex": "amex",
+                        "applepay": "applepay",
+                        "apple": "applepay",
+                        "googlepay": "googlepay",
+                        "google": "googlepay",
+                    }
+                    p_type = brand_map.get(norm) or (norm or None)
+                    last4 = (
+                        pm_source.get("last4")
+                        or pm_source.get("card_last4")
+                        or (
+                            pm_source.get("number")
+                            and str(pm_source.get("number")).isdigit()
+                            and str(pm_source.get("number")).strip()[-4:]
+                        )
+                        or (
+                            pm_source.get("card_number")
+                            and str(pm_source.get("card_number")).isdigit()
+                            and str(pm_source.get("card_number")).strip()[-4:]
+                        )
+                    )
+                    if p_type:
+                        payment_type = p_type
+                        payment_brand = str(raw_brand) if raw_brand else None
+                        payment_last4 = str(last4)[-4:] if last4 else None
         except Exception:
             pass
         summaries.append(
@@ -398,11 +541,23 @@ async def list_receipts_summary(
                 audit_progress=audit_progress,
                 merchant=merchant if isinstance(merchant, str) else None,
                 total=total,
+                payment_type=payment_type,
+                payment_brand=payment_brand,
+                payment_last4=payment_last4,
             )
         )
     # Cache JSON-serializable form
     try:
-        await cache_set_json(cache_key, [s.dict() for s in summaries], ttl=5)
+        await cache_set_json(
+            cache_key,
+            [
+                {
+                    **s.dict(),
+                }
+                for s in summaries
+            ],
+            ttl=5,
+        )
     except Exception:
         pass
     return summaries
@@ -455,7 +610,7 @@ async def receipt_events(
 async def get_receipt(
     receipt_id: int,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> ReceiptRead:
     """Get a specific receipt by ID."""
     # Try cache first
@@ -484,7 +639,7 @@ async def update_receipt(
     receipt_id: int,
     update_data: ReceiptUpdate,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> ReceiptRead:
     """Update a receipt's extracted data or audit decision."""
     query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
@@ -514,7 +669,7 @@ async def update_receipt(
 async def delete_receipt(
     receipt_id: int,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ):  # Remove the return type annotation
     """Delete a receipt."""
     query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
@@ -548,7 +703,7 @@ class AuditResponse(BaseModel):
 async def get_audit_decision(
     receipt_id: int,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User = Depends(user_with_optional_token),
 ) -> AuditResponse:
     """Get the audit decision for a receipt."""
     query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)

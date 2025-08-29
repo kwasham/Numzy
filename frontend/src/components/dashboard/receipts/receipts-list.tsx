@@ -106,25 +106,67 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 			mounted = false;
 		};
 	}, [getToken]);
-	// FAST SUMMARY (cached) for initial paint (token may be null briefly; SWR will refetch when it appears)
+	// FAST SUMMARY (internal route cached) for initial paint
 	const { data: summary, isLoading: summaryLoading } = useReceiptSummaries(authToken, 300);
+
+	// Debounced revalidation trigger via internal API when SSE updates arrive (listens globally once)
 	React.useEffect(() => {
-		if (summary && (!receipts || receipts.length === 0)) {
-			setReceipts(
-				summary.map((s) => ({
+		let timeout: NodeJS.Timeout | null = null;
+		function onUpdate(ev: Event) {
+			const payload = (ev as CustomEvent).detail;
+			if (!payload || typeof payload !== "object") return;
+			if (timeout) return; // collapse bursts
+			timeout = setTimeout(() => {
+				fetch("/api/receipts/revalidate", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ receiptId: payload.receipt_id }),
+				}).catch(() => {});
+				timeout = null;
+			}, 500);
+		}
+		globalThis.addEventListener("receipt:update", onUpdate as EventListener);
+		return () => {
+			if (timeout) clearTimeout(timeout);
+			globalThis.removeEventListener("receipt:update", onUpdate as EventListener);
+		};
+	}, []);
+
+	// Hydrate initial receipts only once from summary; avoid dependency on `receipts` to prevent loops.
+	const hydratedRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!hydratedRef.current && summary && summary.length > 0) {
+			setReceipts((prev) => {
+				if (prev && prev.length > 0) return prev; // Already have data (race safety)
+				const mapped = summary.map((s) => ({
 					id: s.id,
 					filename: s.filename || `receipt-${s.id}`,
 					status: s.status,
-					extracted_data: s.merchant ? { merchant: s.merchant, total: s.total } : null,
+					extracted_data: (() => {
+						const base: Record<string, unknown> = {};
+						if (s.merchant) base.merchant = s.merchant;
+						if (s.total != null) base.total = s.total;
+						// Inject lightweight payment hint so table can derive paymentMethod without extra fetch.
+						if (s.payment_type) {
+							base.payment_method = {
+								type: s.payment_type,
+								brand: s.payment_brand,
+								last4: s.payment_last4,
+							};
+						}
+						return Object.keys(base).length > 0 ? base : null;
+					})(),
 					audit_decision: null,
 					created_at: s.created_at,
 					updated_at: s.updated_at || s.created_at,
 					extraction_progress: s.extraction_progress || 0,
 					audit_progress: s.audit_progress || 0,
-				}))
-			);
+				}));
+				hydratedRef.current = true;
+				return mapped;
+			});
 		}
-	}, [summary, receipts]);
+	}, [summary]);
 
 	// Optimistic insertion of newly uploaded receipt so the table shows it instantly with progress bar
 	React.useEffect(() => {
@@ -177,20 +219,37 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 				// Broadcast globally so other components (like an open modal) can react
 				globalThis.dispatchEvent(new CustomEvent("receipt:update", { detail: payload }));
 				setReceipts((prev) => {
-					const list = prev ? [...prev] : [];
-					const idx = list.findIndex((r) => r.id === payload.receipt_id);
-					if (idx === -1) return prev; // unknown id: ignore
-					const r = { ...list[idx] };
-					if (payload.status) r.status = String(payload.status).toLowerCase();
+					if (!prev) return prev;
+					const idx = prev.findIndex((r) => r.id === payload.receipt_id);
+					if (idx === -1) return prev; // unknown id
+					const current = prev[idx];
+					let changed = false;
+					let next = current;
+					if (payload.status) {
+						const newStatus = String(payload.status).toLowerCase();
+						if (newStatus !== current.status) {
+							changed = true;
+							next = { ...next, status: newStatus };
+						}
+					}
 					if (payload.progress && typeof payload.progress === "object") {
-						if (typeof payload.progress.extraction === "number") r.extraction_progress = payload.progress.extraction;
-						if (typeof payload.progress.audit === "number") r.audit_progress = payload.progress.audit;
+						const ep =
+							typeof payload.progress.extraction === "number"
+								? payload.progress.extraction
+								: current.extraction_progress;
+						const ap = typeof payload.progress.audit === "number" ? payload.progress.audit : current.audit_progress;
+						if (ep !== current.extraction_progress || ap !== current.audit_progress) {
+							changed = true;
+							next = { ...next, extraction_progress: ep, audit_progress: ap };
+						}
 					}
-					list[idx] = r;
+					if (!changed) return prev; // no diff
+					const copy = [...prev];
+					copy[idx] = next;
 					if (payload.type === "receipt.completed") {
-						toast.success(`Receipt ${r.filename || r.id} processed`);
+						toast.success(`Receipt ${next.filename || next.id} processed`);
 					}
-					return list;
+					return copy;
 				});
 			} catch {
 				/* ignore */
@@ -205,15 +264,19 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 				/* ignore token error */
 			}
 			if (cancelled) return;
-			const url = new URL(`${API_URL}/receipts/events`);
-			// If needed, could pass token in a custom header via EventSource polyfill; omitted for now.
-			es = new EventSource(url.toString(), { withCredentials: true });
+			// Updated endpoint path aligned with backend events router. We append the token
+			// as a query param because EventSource cannot set custom Authorization headers.
+			const base = API_URL.replace(/\/$/, "");
+			const qp = _token ? `?token=${encodeURIComponent(_token)}` : "";
+			const url = `${base}/events/receipts/stream${qp}`;
+			es = new EventSource(url, { withCredentials: true });
 			const onError = () => {
 				if (es) es.close();
 				if (cancelled) return;
 				retryTimeout = setTimeout(connect, 2000);
 			};
 			es.addEventListener("message", handleMessage);
+			es.addEventListener("receipt_update", handleMessage as EventListener);
 			es.addEventListener("error", onError);
 		};
 		void connect();

@@ -11,7 +11,7 @@ will simply return the original image data.
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     import fitz  # PyMuPDF for PDF rasterization
@@ -19,9 +19,42 @@ except Exception:  # pragma: no cover
     fitz = None  # type: ignore
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps, ExifTags  # type: ignore
 except ImportError:  # pragma: no cover
     Image = None  # type: ignore
+    ImageOps = None  # type: ignore
+    ExifTags = None  # type: ignore
+
+
+ORIENTATION_TAG_ID = None
+if 'ExifTags' in globals() and ExifTags is not None:  # resolve orientation tag id once
+    try:
+        ORIENTATION_TAG_ID = next(k for k, v in ExifTags.TAGS.items() if v == 'Orientation')  # type: ignore
+    except Exception:
+        ORIENTATION_TAG_ID = None
+
+
+def _apply_exif_orientation(img) -> Tuple[object, bool]:  # pragma: no cover - visual correctness
+    """Return a new image with EXIF orientation applied if needed.
+
+    Returns (image, applied_flag). If Pillow / EXIF not available or orientation
+    cannot be determined, returns the original image and False.
+    """
+    if Image is None or ImageOps is None or ORIENTATION_TAG_ID is None:
+        return img, False
+    try:
+        exif = getattr(img, '_getexif', lambda: None)()
+        if not exif or ORIENTATION_TAG_ID not in exif:
+            return img, False
+        orientation = exif.get(ORIENTATION_TAG_ID)
+        # ImageOps.exif_transpose safely no-ops if already correct
+        transposed = ImageOps.exif_transpose(img)
+        if transposed is not img:
+            return transposed, True
+        # If same object, orientation didn't change
+        return img, False
+    except Exception:
+        return img, False
 
 
 def preprocess_image(image_data: bytes, max_size: int = 1024) -> bytes:
@@ -37,25 +70,23 @@ def preprocess_image(image_data: bytes, max_size: int = 1024) -> bytes:
     :returns: Processed image bytes in JPEG format
     """
     if Image is None:
-        # Pillow not available; return original data
         return image_data
     try:
         with Image.open(BytesIO(image_data)) as img:
-            # Convert to RGB then to grayscale
-            img = img.convert("L")  # grayscale
-            # Resize while preserving aspect ratio
+            # Apply EXIF orientation (e.g., iPhone vertical images)
+            img, _applied = _apply_exif_orientation(img)
+            # Convert to grayscale for OCR consistency
+            img = img.convert("L")
             width, height = img.size
             max_dim = max(width, height)
             if max_dim > max_size:
                 scale = max_size / float(max_dim)
                 new_size = (int(width * scale), int(height * scale))
                 img = img.resize(new_size)
-            # Save to JPEG in memory
             buf = BytesIO()
             img.save(buf, format="JPEG")
             return buf.getvalue()
     except Exception:
-        # If anything goes wrong return original data
         return image_data
 
 
@@ -108,6 +139,8 @@ def generate_thumbnail(data: bytes, filename: str, max_size: int = 480) -> Optio
         return None
     try:
         with Image.open(BytesIO(data)) as img:
+            # Correct orientation before resizing
+            img, _applied = _apply_exif_orientation(img)
             img = img.convert("RGB")
             w, h = img.size
             scale = min(1.0, float(max_size) / float(max(w, h)))
