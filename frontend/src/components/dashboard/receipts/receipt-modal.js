@@ -26,16 +26,11 @@ import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
 import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
 import { parseAmount } from "@/lib/parse-amount";
+// Shared cache utilities now encapsulated inside the hook
+import { useReceiptDetails } from "@/hooks/use-receipt-details";
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
-import {
-	detailCache,
-	isFresh,
-	previewCache,
-	setFullDetail,
-	setPreview,
-} from "@/components/dashboard/receipts/receipt-cache";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const PREVIEW_BOX_HEIGHT = 420; // reserved vertical space to avoid layout jump
@@ -53,188 +48,45 @@ function safeNum(v, def = 0) {
 	return def;
 }
 
-// Retry helper for signed URL endpoints: retries on 409 (file not ready)
-async function fetchSignedUrlWithRetry(path, headers, attempts = [300, 800, 1500]) {
-	for (let i = 0; i <= attempts.length; i++) {
-		try {
-			const res = await fetch(`${API_URL}${path}`, { headers });
-			if (res.ok) {
-				const { url } = await res.json();
-				return `${API_URL}${url}`;
-			}
-			if (res.status === 409 && i < attempts.length) {
-				await new Promise((r) => setTimeout(r, attempts[i]));
-				continue;
-			}
-			return null;
-		} catch {
-			if (i < attempts.length) {
-				await new Promise((r) => setTimeout(r, attempts[i]));
-				continue;
-			}
-			return null;
-		}
-	}
-	return null;
-}
+// (Network retry logic moved into hook implementation.)
 
 export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 	const router = useRouter();
 	const { getToken } = useAuth();
 
-	// New simplified state with 'refreshing' to differentiate first load vs background refresh
-	const [detailState, setDetailState] = React.useState({ data: null, loading: false, refreshing: false, error: null });
-	const [previewState, setPreviewState] = React.useState({ src: null, loading: false, refreshing: false });
+	// Centralized receipt + preview data via custom hook
+	const {
+		receipt,
+		loading,
+		refreshing,
+		error,
+		previewSrc,
+		previewLoading,
+		previewRefreshing,
+		manualRefreshPreview: hookManualRefreshPreview,
+	} = useReceiptDetails({ open, receiptId, receipt: providedReceipt, providedReceipt });
 	const [lightboxOpen, setLightboxOpen] = React.useState(false);
-	const detailAbortRef = React.useRef(null);
-	const previewAbortRef = React.useRef(null);
+	// Provide legacy-shaped state objects for downstream rendering logic (minimize diff)
+	const detailState = React.useMemo(
+		() => ({ data: receipt, loading, refreshing, error }),
+		[receipt, loading, refreshing, error]
+	);
+	const previewState = React.useMemo(
+		() => ({ src: previewSrc, loading: previewLoading, refreshing: previewRefreshing }),
+		[previewSrc, previewLoading, previewRefreshing]
+	);
+	const manualRefreshPreview = React.useCallback(() => hookManualRefreshPreview(), [hookManualRefreshPreview]);
 
 	const handleClose = React.useCallback(() => {
 		router.push(paths.dashboard.receipts);
 	}, [router]);
 
-	// If parent supplies full/partial receipt, seed state and skip fetch entirely.
-	React.useEffect(() => {
-		if (!open || !receiptId) return;
-		if (providedReceipt) {
-			setDetailState({ data: providedReceipt, loading: false, refreshing: false, error: null });
-			// Store in cache for later reopens (optional)
-			setFullDetail(providedReceipt.id, providedReceipt);
-			return; // do not proceed to fetch effect below
-		}
-		// Fallback to previous behavior if no receipt provided
-		if (detailAbortRef.current) detailAbortRef.current.abort();
-		const controller = new AbortController();
-		detailAbortRef.current = controller;
-		const cached = detailCache.get(receiptId) || detailCache.get(String(receiptId));
-		const fresh = isFresh(cached);
-		if (cached) {
-			setDetailState({ data: cached.data, loading: false, refreshing: !fresh, error: null });
-			if (fresh && !cached.partial) return () => controller.abort();
-		} else {
-			setDetailState({ data: null, loading: true, refreshing: false, error: null });
-		}
-		(async () => {
-			try {
-				let token = null;
-				try {
-					token = await getToken?.();
-				} catch {
-					/* silent */
-				}
-				const url = token
-					? `/api/receipts/${encodeURIComponent(receiptId)}?token=${encodeURIComponent(token)}`
-					: `/api/receipts/${encodeURIComponent(receiptId)}`;
-				const res = await fetch(url, { cache: "no-store", signal: controller.signal });
-				if (!res.ok) throw new Error(res.status === 404 ? "Receipt not found" : `Failed (${res.status})`);
-				const data = await res.json();
-				if (controller.signal.aborted) return;
-				setFullDetail(receiptId, data);
-				setDetailState({ data, loading: false, refreshing: false, error: null });
-			} catch (error) {
-				if (controller.signal.aborted) return;
-				setDetailState((prev) => ({
-					...prev,
-					loading: false,
-					refreshing: false,
-					error: error?.message || "Failed to load",
-				}));
-			}
-		})();
-		return () => controller.abort();
-	}, [open, receiptId, providedReceipt, getToken]);
-
-	// Preview (double buffer)
-	React.useEffect(() => {
-		if (!open || !receiptId) return;
-		if (previewAbortRef.current) previewAbortRef.current.abort();
-		const controller = new AbortController();
-		previewAbortRef.current = controller;
-		const cached = previewCache.get(receiptId) || previewCache.get(String(receiptId));
-		if (cached) setPreviewState({ src: cached.src, loading: false, refreshing: true });
-		else setPreviewState({ src: null, loading: true, refreshing: false });
-		(async () => {
-			try {
-				let token = null;
-				try {
-					token = await getToken?.();
-				} catch {
-					/* ignore token */
-				}
-				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
-				const thumb = token
-					? `/api/receipts/${encodeURIComponent(receiptId)}/thumb?token=${encodeURIComponent(token)}`
-					: `/api/receipts/${encodeURIComponent(receiptId)}/thumb`;
-				let chosen = null;
-				try {
-					const r = await fetch(thumb, { cache: "no-store", signal: controller.signal });
-					if (r.ok && r.headers.get("content-type")?.startsWith("image")) chosen = thumb;
-				} catch {
-					/* ignore thumb fetch */
-				}
-				if (!chosen) {
-					const dl = await fetchSignedUrlWithRetry(
-						`/receipts/${encodeURIComponent(receiptId)}/download_url`,
-						auth,
-						[300, 700, 1200]
-					);
-					if (dl) chosen = dl.startsWith("http") ? dl : `${API_URL}${dl}`;
-				}
-				if (!chosen || controller.signal.aborted) {
-					setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
-					return;
-				}
-				const img = new Image();
-				img.addEventListener("load", () => {
-					if (controller.signal.aborted) return;
-					setPreview(receiptId, chosen);
-					setPreviewState({ src: chosen, loading: false, refreshing: false });
-				});
-				img.addEventListener("error", () => {
-					if (controller.signal.aborted) return;
-					setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
-				});
-				img.src = chosen.includes("?") ? `${chosen}&cb=${Date.now()}` : `${chosen}?cb=${Date.now()}`;
-			} catch {
-				if (!controller.signal.aborted) setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
-			}
-		})();
-		return () => controller.abort();
-	}, [open, receiptId, getToken]);
-
-	// SSE status update (minimal)
-	React.useEffect(() => {
-		if (!open || !receiptId) return;
-		function onUpdate(ev) {
-			const payload = ev.detail;
-			if (!payload || payload.receipt_id !== receiptId) return;
-			setDetailState((prev) => {
-				if (!prev.data) return prev;
-				const next = { ...prev.data };
-				if (payload.status) next.status = String(payload.status).toLowerCase();
-				detailCache.set(receiptId, { data: next, ts: Date.now() });
-				return { ...prev, data: next };
-			});
-		}
-		globalThis.addEventListener("receipt:update", onUpdate);
-		return () => globalThis.removeEventListener("receipt:update", onUpdate);
-	}, [open, receiptId]);
-
-	// Live patch updates from SSE (fired by receipts list component)
-
-	// Helper to refresh preview (manual or auto)
-	// manual preview refresh handler
-	const manualRefreshPreview = React.useCallback(() => {
-		if (!receiptId) return;
-		previewCache.delete(receiptId);
-		setPreviewState({ src: null, loading: true });
-	}, [receiptId]);
+	// Effects moved into useReceiptDetails hook.
 
 	// Poll receipt while status is pending/processing to update details and attempt preview again
 
 	// Only display receipt details if they belong to the currently requested receiptId
 	// Normalize id types to string to avoid mismatch causing hidden details
-	const receipt = detailState.data;
 	const displayedReceipt = React.useMemo(() => {
 		if (!receipt || !receiptId) return null;
 		return String(receipt.id) === String(receiptId) ? receipt : null;
@@ -452,11 +304,6 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 	// Simple cache bust: append a version param so refreshed signed URLs always reload
 	const [imgLoaded, setImgLoaded] = React.useState(false);
 	const [loadedForId, setLoadedForId] = React.useState(null);
-	const previewSrc = React.useMemo(() => {
-		if (!previewState.src) return null;
-		const hasQuery = previewState.src.includes("?");
-		return `${previewState.src}${hasQuery ? "&" : "?"}rid=${encodeURIComponent(String(receiptId || ""))}`;
-	}, [previewState.src, receiptId]);
 
 	// Reset image loaded flag when source changes
 	React.useEffect(() => {
