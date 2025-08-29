@@ -20,6 +20,7 @@ import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
 import { parseAmount } from "@/lib/parse-amount";
 import { DataTable } from "@/components/core/data-table";
+import { previewCache, setPreview } from "@/components/dashboard/receipts/receipt-cache";
 
 import { useReceiptsSelection } from "./receipts-selection-context";
 
@@ -93,7 +94,27 @@ function toDisplayRow(r) {
 const columns = [
 	{
 		formatter: (row) => (
-			<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+			<Stack
+				direction="row"
+				spacing={2}
+				sx={{ alignItems: "center" }}
+				onMouseEnter={() => {
+					// If we ever want to prefetch preview on hover, trigger lightweight fetch here
+					// Skip if preview already cached
+					if (previewCache.get(row.id) || previewCache.get(String(row.id))) return;
+					// Fire-and-forget fetch of thumb (no token prefetch to avoid auth complexity here)
+					const controller = new AbortController();
+					const thumb = `/api/receipts/${encodeURIComponent(row.id)}/thumb`;
+					fetch(thumb, { signal: controller.signal })
+						.then((r) => {
+							if (!r.ok) return;
+							const ct = r.headers.get("content-type") || "";
+							if (!ct.startsWith("image")) return;
+							setPreview(row.id, thumb);
+						})
+						.catch(() => {});
+				}}
+			>
 				<Box
 					sx={{
 						bgcolor: "var(--mui-palette-background-level1)",
@@ -112,6 +133,19 @@ const columns = [
 						component={RouterLink}
 						href={paths.dashboard.receiptsPreview(row.id)}
 						sx={{ cursor: "pointer" }}
+						onFocus={() => {
+							// Preload on keyboard focus as well
+							if (previewCache.get(row.id) || previewCache.get(String(row.id))) return;
+							const thumb = `/api/receipts/${encodeURIComponent(row.id)}/thumb`;
+							fetch(thumb)
+								.then((r) => {
+									if (!r.ok) return;
+									const ct = r.headers.get("content-type") || "";
+									if (!ct.startsWith("image")) return;
+									setPreview(row.id, thumb);
+								})
+								.catch(() => {});
+						}}
 						variant="subtitle2"
 					>
 						{row.customer.name}

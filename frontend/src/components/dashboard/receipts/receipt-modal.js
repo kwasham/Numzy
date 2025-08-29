@@ -29,14 +29,17 @@ import { parseAmount } from "@/lib/parse-amount";
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
+import {
+	detailCache,
+	isFresh,
+	previewCache,
+	setFullDetail,
+	setPreview,
+} from "@/components/dashboard/receipts/receipt-cache";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const PREVIEW_AUTO_REFRESH_INTERVAL = 3000; // ms
-const PREVIEW_MAX_AUTO_ATTEMPTS = 10;
-// Simple module-level thumbnail cache to prevent re-fetch churn when opening/closing quickly
-const _thumbMemoryCache = new Map();
-const _thumbUrlRefMap = new Map();
-const _downloadUrlRefMap = new Map();
+const PREVIEW_BOX_HEIGHT = 420; // reserved vertical space to avoid layout jump
+// Caches sourced from shared receipt-cache module
 
 // Numeric helpers
 function safeNum(v, def = 0) {
@@ -75,222 +78,169 @@ async function fetchSignedUrlWithRetry(path, headers, attempts = [300, 800, 1500
 	return null;
 }
 
-export function ReceiptModal({ open, receiptId }) {
+export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 	const router = useRouter();
 	const { getToken } = useAuth();
 
-	const [loading, setLoading] = React.useState(false);
-	const [error, setError] = React.useState(null);
-	const [receipt, setReceipt] = React.useState(null);
-	const [downloadUrl, setDownloadUrl] = React.useState(null);
-	const [thumbUrl, setThumbUrl] = React.useState(null);
-	// Keep refs updated for caching logic
-	React.useEffect(() => {
-		if (receiptId && thumbUrl) _thumbUrlRefMap.set(receiptId, thumbUrl);
-	}, [receiptId, thumbUrl]);
-	React.useEffect(() => {
-		if (receiptId && downloadUrl) _downloadUrlRefMap.set(receiptId, downloadUrl);
-	}, [receiptId, downloadUrl]);
-	const [thumbTried, setThumbTried] = React.useState(false);
-	const [previewAttempts, setPreviewAttempts] = React.useState(0);
-	const [autoRefreshing, setAutoRefreshing] = React.useState(false);
+	// New simplified state with 'refreshing' to differentiate first load vs background refresh
+	const [detailState, setDetailState] = React.useState({ data: null, loading: false, refreshing: false, error: null });
+	const [previewState, setPreviewState] = React.useState({ src: null, loading: false, refreshing: false });
 	const [lightboxOpen, setLightboxOpen] = React.useState(false);
+	const detailAbortRef = React.useRef(null);
+	const previewAbortRef = React.useRef(null);
 
 	const handleClose = React.useCallback(() => {
 		router.push(paths.dashboard.receipts);
 	}, [router]);
 
+	// If parent supplies full/partial receipt, seed state and skip fetch entirely.
 	React.useEffect(() => {
-		let active = true;
-		async function run() {
-			if (!open || !receiptId) return;
-			setLoading(true);
-			setError(null);
+		if (!open || !receiptId) return;
+		if (providedReceipt) {
+			setDetailState({ data: providedReceipt, loading: false, refreshing: false, error: null });
+			// Store in cache for later reopens (optional)
+			setFullDetail(providedReceipt.id, providedReceipt);
+			return; // do not proceed to fetch effect below
+		}
+		// Fallback to previous behavior if no receipt provided
+		if (detailAbortRef.current) detailAbortRef.current.abort();
+		const controller = new AbortController();
+		detailAbortRef.current = controller;
+		const cached = detailCache.get(receiptId) || detailCache.get(String(receiptId));
+		const fresh = isFresh(cached);
+		if (cached) {
+			setDetailState({ data: cached.data, loading: false, refreshing: !fresh, error: null });
+			if (fresh && !cached.partial) return () => controller.abort();
+		} else {
+			setDetailState({ data: null, loading: true, refreshing: false, error: null });
+		}
+		(async () => {
 			try {
 				let token = null;
 				try {
 					token = await getToken?.();
-				} catch (error_) {
-					console.debug("getToken error", error_);
+				} catch {
+					/* silent */
+				}
+				const url = token
+					? `/api/receipts/${encodeURIComponent(receiptId)}?token=${encodeURIComponent(token)}`
+					: `/api/receipts/${encodeURIComponent(receiptId)}`;
+				const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+				if (!res.ok) throw new Error(res.status === 404 ? "Receipt not found" : `Failed (${res.status})`);
+				const data = await res.json();
+				if (controller.signal.aborted) return;
+				setFullDetail(receiptId, data);
+				setDetailState({ data, loading: false, refreshing: false, error: null });
+			} catch (error) {
+				if (controller.signal.aborted) return;
+				setDetailState((prev) => ({
+					...prev,
+					loading: false,
+					refreshing: false,
+					error: error?.message || "Failed to load",
+				}));
+			}
+		})();
+		return () => controller.abort();
+	}, [open, receiptId, providedReceipt, getToken]);
+
+	// Preview (double buffer)
+	React.useEffect(() => {
+		if (!open || !receiptId) return;
+		if (previewAbortRef.current) previewAbortRef.current.abort();
+		const controller = new AbortController();
+		previewAbortRef.current = controller;
+		const cached = previewCache.get(receiptId) || previewCache.get(String(receiptId));
+		if (cached) setPreviewState({ src: cached.src, loading: false, refreshing: true });
+		else setPreviewState({ src: null, loading: true, refreshing: false });
+		(async () => {
+			try {
+				let token = null;
+				try {
+					token = await getToken?.();
+				} catch {
+					/* ignore token */
 				}
 				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
-				const res = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}`, { headers: auth });
-				if (!res.ok) throw new Error(`Failed to load receipt (${res.status})`);
-				const data = await res.json();
-				if (!active) return;
-				setReceipt(data);
-				// Reset preview state before fetching any signed URLs
-				// Attempt memory cache reuse
-				if (_thumbMemoryCache.has(receiptId)) {
-					const cached = _thumbMemoryCache.get(receiptId);
-					setThumbUrl(cached.thumbUrl || null);
-					setDownloadUrl(cached.downloadUrl || null);
+				const thumb = token
+					? `/api/receipts/${encodeURIComponent(receiptId)}/thumb?token=${encodeURIComponent(token)}`
+					: `/api/receipts/${encodeURIComponent(receiptId)}/thumb`;
+				let chosen = null;
+				try {
+					const r = await fetch(thumb, { cache: "no-store", signal: controller.signal });
+					if (r.ok && r.headers.get("content-type")?.startsWith("image")) chosen = thumb;
+				} catch {
+					/* ignore thumb fetch */
 				}
-				setThumbUrl((prev) => prev || null);
-				setDownloadUrl((prev) => prev || null);
-				setThumbTried(false);
-				setPreviewAttempts(0);
-				// Kick off thumbnail + download URL retrieval in parallel to minimize perceived latency.
-				// We keep shorter backoff for early attempts to surface preview faster.
-				const thumbPromise = (async () => {
-					try {
-						const thumb = await fetchSignedUrlWithRetry(
-							`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
-							auth,
-							[200, 500, 900, 1400]
-						);
-						if (active) {
-							setThumbTried(true);
-							if (thumb) setThumbUrl(thumb);
-							setPreviewAttempts((a) => a + 1);
-						}
-					} catch (error_) {
-						if (active) setThumbTried(true);
-						console.debug("thumbnail_url error", error_);
-					}
-				})();
-				const downloadPromise = (async () => {
-					try {
-						const dl = await fetchSignedUrlWithRetry(
-							`/receipts/${encodeURIComponent(receiptId)}/download_url`,
-							auth,
-							[300, 700, 1200]
-						);
-						if (dl && active) setDownloadUrl(dl);
-					} catch (error_) {
-						console.debug("download_url error", error_);
-					}
-				})();
-				await Promise.race([thumbPromise, downloadPromise]); // show whichever finishes first
-				// Persist to memory cache with latest known URLs (from refs if already set asynchronously)
-				_thumbMemoryCache.set(receiptId, {
-					thumbUrl: _thumbUrlRefMap.get(receiptId) || thumbUrl,
-					downloadUrl: _downloadUrlRefMap.get(receiptId) || downloadUrl,
+				if (!chosen) {
+					const dl = await fetchSignedUrlWithRetry(
+						`/receipts/${encodeURIComponent(receiptId)}/download_url`,
+						auth,
+						[300, 700, 1200]
+					);
+					if (dl) chosen = dl.startsWith("http") ? dl : `${API_URL}${dl}`;
+				}
+				if (!chosen || controller.signal.aborted) {
+					setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
+					return;
+				}
+				const img = new Image();
+				img.addEventListener("load", () => {
+					if (controller.signal.aborted) return;
+					setPreview(receiptId, chosen);
+					setPreviewState({ src: chosen, loading: false, refreshing: false });
 				});
-			} catch (error_) {
-				if (!active) return;
-				setError(error_?.message || "Failed to load");
-			} finally {
-				if (active) setLoading(false);
+				img.addEventListener("error", () => {
+					if (controller.signal.aborted) return;
+					setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
+				});
+				img.src = chosen.includes("?") ? `${chosen}&cb=${Date.now()}` : `${chosen}?cb=${Date.now()}`;
+			} catch {
+				if (!controller.signal.aborted) setPreviewState((p) => ({ ...p, loading: false, refreshing: false }));
 			}
-		}
-		run();
-		return () => {
-			active = false;
-		};
-		// Intentionally exclude thumbUrl/downloadUrl to avoid refetch loop; first load only.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
+		})();
+		return () => controller.abort();
 	}, [open, receiptId, getToken]);
 
-	// Live patch updates from SSE (fired by receipts list component)
+	// SSE status update (minimal)
 	React.useEffect(() => {
 		if (!open || !receiptId) return;
 		function onUpdate(ev) {
 			const payload = ev.detail;
 			if (!payload || payload.receipt_id !== receiptId) return;
-			setReceipt((prev) => {
-				if (!prev || prev.id !== receiptId) return prev;
-				const next = { ...prev };
+			setDetailState((prev) => {
+				if (!prev.data) return prev;
+				const next = { ...prev.data };
 				if (payload.status) next.status = String(payload.status).toLowerCase();
-				if (payload.progress && typeof payload.progress === "object") {
-					// Could store progress if modal needs it later
-				}
-				return next;
+				detailCache.set(receiptId, { data: next, ts: Date.now() });
+				return { ...prev, data: next };
 			});
 		}
 		globalThis.addEventListener("receipt:update", onUpdate);
 		return () => globalThis.removeEventListener("receipt:update", onUpdate);
 	}, [open, receiptId]);
 
+	// Live patch updates from SSE (fired by receipts list component)
+
 	// Helper to refresh preview (manual or auto)
-	const refreshPreview = React.useCallback(
-		async (opts) => {
-			const force = opts && typeof opts.force === "boolean" ? opts.force : false;
-			if (!receiptId) return;
-			if (!force && (thumbUrl || downloadUrl)) return; // avoid redundant fetches
-			let token = null;
-			try {
-				token = await getToken?.();
-			} catch {
-				/* ignore */
-			}
-			const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
-			try {
-				const thumb = await fetchSignedUrlWithRetry(
-					`/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`,
-					auth,
-					[400, 800, 1600]
-				);
-				setThumbTried(true);
-				if (thumb) setThumbUrl(thumb);
-				setPreviewAttempts((a) => a + 1);
-			} catch {
-				setThumbTried(true); /* ignore */
-			}
-			if (!thumbUrl && !downloadUrl) {
-				try {
-					const dl = await fetchSignedUrlWithRetry(`/receipts/${encodeURIComponent(receiptId)}/download_url`, auth);
-					if (dl) setDownloadUrl(dl);
-				} catch {
-					/* ignore */
-				}
-			}
-		},
-		[receiptId, getToken, thumbUrl, downloadUrl]
-	);
+	// manual preview refresh handler
+	const manualRefreshPreview = React.useCallback(() => {
+		if (!receiptId) return;
+		previewCache.delete(receiptId);
+		setPreviewState({ src: null, loading: true });
+	}, [receiptId]);
 
 	// Poll receipt while status is pending/processing to update details and attempt preview again
-	React.useEffect(() => {
-		if (!open || !receipt || !["pending", "processing"].includes((receipt.status || "").toLowerCase())) return;
-		let active = true;
-		let attempts = 0;
-		setAutoRefreshing(true);
-		const id = setInterval(async () => {
-			attempts += 1;
-			if (attempts > PREVIEW_MAX_AUTO_ATTEMPTS) {
-				clearInterval(id);
-				if (active) setAutoRefreshing(false);
-				return;
-			}
-			try {
-				let token = null;
-				try {
-					token = await getToken?.();
-				} catch {
-					/* ignore */
-				}
-				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
-				const res = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}`, {
-					headers: auth,
-					cache: "no-store",
-				});
-				if (res.ok) {
-					const data = await res.json();
-					if (active) setReceipt(data);
-					if (active && !thumbUrl && !downloadUrl) {
-						await refreshPreview();
-						if (thumbUrl || downloadUrl) {
-							clearInterval(id);
-							if (active) setAutoRefreshing(false);
-						}
-					}
-				}
-				const statusLower = (receipt?.status || "").toLowerCase();
-				if (!["pending", "processing"].includes(statusLower)) {
-					clearInterval(id);
-					if (active) setAutoRefreshing(false);
-				}
-			} catch {
-				/* ignore */
-			}
-		}, PREVIEW_AUTO_REFRESH_INTERVAL);
-		return () => {
-			active = false;
-			clearInterval(id);
-		};
-	}, [open, receipt, receiptId, refreshPreview, thumbUrl, downloadUrl, getToken]);
 
-	const ed = receipt && typeof receipt.extracted_data === "object" ? receipt.extracted_data : {};
+	// Only display receipt details if they belong to the currently requested receiptId
+	// Normalize id types to string to avoid mismatch causing hidden details
+	const receipt = detailState.data;
+	const displayedReceipt = React.useMemo(() => {
+		if (!receipt || !receiptId) return null;
+		return String(receipt.id) === String(receiptId) ? receipt : null;
+	}, [receipt, receiptId]);
+	const ed =
+		displayedReceipt && typeof displayedReceipt.extracted_data === "object" ? displayedReceipt.extracted_data : {};
 	const merchant = (ed && (ed.merchant ?? ed.vendor ?? ed.merchant_name)) || "—";
 	// Address can arrive as a string, structured object, or array. Normalize to a display string.
 	function formatAddress(addr) {
@@ -375,7 +325,8 @@ export function ReceiptModal({ open, receiptId }) {
 	// (moved subtotal/discount inference below after lineItems & total definitions)
 
 	// Audit decision indicators
-	const auditDecision = receipt && typeof receipt.audit_decision === "object" ? receipt.audit_decision : null;
+	const auditDecision =
+		displayedReceipt && typeof displayedReceipt.audit_decision === "object" ? displayedReceipt.audit_decision : null;
 	const needsAudit = Boolean(auditDecision?.needs_audit);
 	const auditMathError = Boolean(auditDecision?.math_error);
 	const amountOverLimit = Boolean(auditDecision?.amount_over_limit);
@@ -499,14 +450,23 @@ export function ReceiptModal({ open, receiptId }) {
 	);
 
 	// Simple cache bust: append a version param so refreshed signed URLs always reload
-	const basePreviewSrc = thumbUrl || downloadUrl || null;
+	const [imgLoaded, setImgLoaded] = React.useState(false);
+	const [loadedForId, setLoadedForId] = React.useState(null);
 	const previewSrc = React.useMemo(() => {
-		if (!basePreviewSrc) return null;
-		const hasQuery = basePreviewSrc.includes("?");
-		return `${basePreviewSrc}${hasQuery ? "&" : "?"}v=${Date.now()}`; // avoid stale cached image
-	}, [basePreviewSrc]);
-	const showPlaceholder = !loading && !error && !previewSrc && thumbTried;
-	const showSkeleton = !loading && !error && !previewSrc && !thumbTried; // initial wait before we have tried fetching
+		if (!previewState.src) return null;
+		const hasQuery = previewState.src.includes("?");
+		return `${previewState.src}${hasQuery ? "&" : "?"}rid=${encodeURIComponent(String(receiptId || ""))}`;
+	}, [previewState.src, receiptId]);
+
+	// Reset image loaded flag when source changes
+	React.useEffect(() => {
+		// Reset when preview source OR target receipt changes
+		setImgLoaded(false);
+		// Don't carry over previous loadedForId so old image isn't shown for new id
+		setLoadedForId(null);
+	}, [previewSrc, receiptId]);
+	const showSkeleton = previewState.loading && !previewSrc;
+	const showNoPreview = !previewState.loading && !previewSrc;
 
 	return (
 		<Dialog
@@ -520,19 +480,19 @@ export function ReceiptModal({ open, receiptId }) {
 		>
 			<DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, minHeight: 0, overflow: "hidden" }}>
 				<Stack direction="row" sx={{ alignItems: "center", flex: "0 0 auto", justifyContent: "space-between" }}>
-					<Typography variant="h6">{receipt ? `RCP-${receipt.id}` : "Receipt"}</Typography>
+					<Typography variant="h6">{displayedReceipt ? `RCP-${displayedReceipt.id}` : "Receipt"}</Typography>
 					<IconButton onClick={handleClose}>
 						<XIcon />
 					</IconButton>
 				</Stack>
 				<Stack spacing={3} sx={{ flex: "1 1 auto", overflow: "auto" }}>
-					{loading ? (
+					{detailState.loading && !detailState.data ? (
 						<Typography color="text.secondary" variant="body2">
 							Loading…
 						</Typography>
-					) : error ? (
+					) : detailState.error ? (
 						<Typography color="error.main" variant="body2">
-							{String(error)}
+							{String(detailState.error)}
 						</Typography>
 					) : null}
 					<Stack spacing={3}>
@@ -541,7 +501,7 @@ export function ReceiptModal({ open, receiptId }) {
 							<Button
 								color="secondary"
 								component={RouterLink}
-								href={paths.dashboard.receiptsDetails(String(receipt?.id || ""))}
+								href={paths.dashboard.receiptsDetails(String(displayedReceipt?.id || ""))}
 								startIcon={<PencilSimpleIcon />}
 							>
 								Edit
@@ -557,7 +517,7 @@ export function ReceiptModal({ open, receiptId }) {
 									},
 									{
 										key: "Date",
-										value: receipt ? dayjs(receipt.created_at).format("MMMM D, YYYY hh:mm A") : "—",
+										value: displayedReceipt ? dayjs(displayedReceipt.created_at).format("MMMM D, YYYY hh:mm A") : "—",
 									},
 									{
 										key: "Status",
@@ -565,8 +525,8 @@ export function ReceiptModal({ open, receiptId }) {
 											<Chip
 												icon={<CheckCircleIcon color="var(--mui-palette-success-main)" weight="fill" />}
 												label={
-													(receipt?.status || "").toString().charAt(0).toUpperCase() +
-													(receipt?.status || "").toString().slice(1)
+													(displayedReceipt?.status || "").toString().charAt(0).toUpperCase() +
+													(displayedReceipt?.status || "").toString().slice(1)
 												}
 												size="small"
 												variant="outlined"
@@ -591,7 +551,7 @@ export function ReceiptModal({ open, receiptId }) {
 										),
 									},
 									{ key: "Payment Method", value: paymentDisplay },
-									{ key: "Filename", value: receipt?.filename || "—" },
+									{ key: "Filename", value: displayedReceipt?.filename || "—" },
 								].map((item) => (
 									<PropertyItem key={item.key} name={item.key} value={item.value} />
 								))}
@@ -600,32 +560,68 @@ export function ReceiptModal({ open, receiptId }) {
 						{previewSrc ? (
 							<Card sx={{ borderRadius: 1 }} variant="outlined">
 								<Box sx={{ p: 2 }}>
-									<Box sx={{ position: "relative" }}>
+									<Box
+										key={`preview-${receiptId}`}
+										sx={{ position: "relative", height: PREVIEW_BOX_HEIGHT, width: "100%" }}
+									>
+										{/* Background placeholder to lock layout height */}
 										<Box
-											component="img"
-											src={previewSrc}
-											alt="Receipt preview"
-											onClick={() => setLightboxOpen(true)}
 											sx={{
-												maxWidth: "100%",
-												width: "100%",
-												height: "auto",
-												maxHeight: 420,
-												objectFit: "contain",
-												display: "block",
-												margin: "0 auto",
+												position: "absolute",
+												inset: 0,
 												borderRadius: 1,
-												cursor: "zoom-in",
-												boxShadow: 1,
 												bgcolor: "background.default",
+												border: "1px solid",
+												borderColor: "divider",
+												overflow: "hidden",
 											}}
-										/>
+										>
+											{!imgLoaded && (
+												<Skeleton
+													variant="rectangular"
+													animation="wave"
+													width="100%"
+													height="100%"
+													sx={{ borderRadius: 0 }}
+												/>
+											)}
+											{previewSrc && (
+												<Box
+													component="img"
+													src={previewSrc}
+													alt="Receipt preview"
+													onClick={() => setLightboxOpen(true)}
+													onLoad={() => {
+														setImgLoaded(true);
+														setLoadedForId(receiptId);
+													}}
+													sx={{
+														position: "absolute",
+														inset: 0,
+														width: "100%",
+														height: "100%",
+														objectFit: "contain",
+														cursor: "zoom-in",
+														transition: "opacity 240ms ease",
+														opacity: imgLoaded && loadedForId === receiptId ? 1 : 0,
+													}}
+												/>
+											)}
+										</Box>
 										<Tooltip title="Zoom">
 											<IconButton
 												color="primary"
 												onClick={() => setLightboxOpen(true)}
+												disabled={!previewSrc || !imgLoaded || loadedForId !== receiptId}
 												size="small"
-												sx={{ position: "absolute", top: 8, right: 8, bgcolor: "background.paper", boxShadow: 2 }}
+												sx={{
+													position: "absolute",
+													top: 8,
+													right: 8,
+													bgcolor: "background.paper",
+													boxShadow: 2,
+													opacity: previewSrc && loadedForId === receiptId ? 1 : 0.4,
+												}}
 											>
 												<MagnifyingGlassPlus size={16} />
 											</IconButton>
@@ -641,30 +637,15 @@ export function ReceiptModal({ open, receiptId }) {
 										<Typography variant="caption" color="text.secondary">
 											Loading preview…
 										</Typography>
-										{autoRefreshing && (
-											<Typography variant="caption" color="text.secondary">
-												Attempt {previewAttempts + 1}/{PREVIEW_MAX_AUTO_ATTEMPTS}
-											</Typography>
-										)}
 									</Box>
 								</Box>
 							</Card>
-						) : showPlaceholder ? (
+						) : showNoPreview ? (
 							<Card sx={{ borderRadius: 1 }} variant="outlined">
 								<Box sx={{ p: 4, display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
-									<Tooltip
-										title={
-											previewAttempts >= PREVIEW_MAX_AUTO_ATTEMPTS
-												? "Max attempts reached"
-												: autoRefreshing
-													? "Still trying to generate preview"
-													: "You can try refreshing the preview"
-										}
-									>
-										<Typography variant="body2" color="text.secondary">
-											No preview available
-										</Typography>
-									</Tooltip>
+									<Typography variant="body2" color="text.secondary">
+										No preview available
+									</Typography>
 									<Typography variant="caption" color="text.secondary" align="center">
 										(The file may still be processing or is an unsupported format)
 									</Typography>
@@ -672,8 +653,8 @@ export function ReceiptModal({ open, receiptId }) {
 										<Button
 											size="small"
 											variant="outlined"
-											onClick={() => refreshPreview({ force: true })}
-											disabled={autoRefreshing && previewAttempts < PREVIEW_MAX_AUTO_ATTEMPTS}
+											onClick={manualRefreshPreview}
+											disabled={previewState.loading}
 										>
 											Refresh preview
 										</Button>
@@ -764,7 +745,7 @@ export function ReceiptModal({ open, receiptId }) {
 											)}
 										</Stack>
 									</Stack>
-									{receipt?.status === "failed" && (
+									{displayedReceipt?.status === "failed" && (
 										<Box sx={{ pt: 1, display: "flex", justifyContent: "flex-end" }}>
 											<Button
 												size="small"
@@ -777,7 +758,7 @@ export function ReceiptModal({ open, receiptId }) {
 														} catch {
 															/* silent token fetch failure */
 														}
-														await fetch(`${API_URL}/receipts/${encodeURIComponent(receipt.id)}/reprocess`, {
+														await fetch(`${API_URL}/receipts/${encodeURIComponent(displayedReceipt.id)}/reprocess`, {
 															method: "POST",
 															headers: token ? { Authorization: `Bearer ${token}` } : undefined,
 														});

@@ -6,6 +6,7 @@ import Card from "@mui/material/Card";
 import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
 
+import { primePartialReceipt } from "@/components/dashboard/receipts/receipt-cache";
 import { ReceiptsFilters } from "@/components/dashboard/receipts/receipts-filters";
 import { ReceiptsList } from "@/components/dashboard/receipts/receipts-list";
 import { ReceiptsPagination } from "@/components/dashboard/receipts/receipts-pagination";
@@ -55,6 +56,11 @@ export function ReceiptsContent({ filters, sortDir = "desc" }: ReceiptsContentPr
 		audit_progress: number;
 	};
 	const [rows, setRows] = React.useState<ReceiptRow[]>([]);
+
+	// Prime cache whenever rows change (only minimal data)
+	React.useEffect(() => {
+		for (const r of rows) primePartialReceipt(r);
+	}, [rows]);
 
 	return (
 		<Stack spacing={4} sx={{ flex: "1 1 auto", minWidth: 0 }}>
