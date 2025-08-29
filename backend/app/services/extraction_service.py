@@ -84,7 +84,7 @@ class ExtractionService:
             "gpt5": "gpt-4o-mini",
         }
         primary_model = placeholder_map.get(primary_model.lower(), primary_model)
-        fb_env = os.getenv("EXTRACTION_MODEL_FALLBACKS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini")
+        fb_env = os.getenv("EXTRACTION_MODEL_FALLBACKS", "gpt-4o-mini")
         fallback_models = [m.strip() for m in fb_env.split(",") if m.strip()]
         # Ensure primary is first and unique ordering
         cascade: list[str] = []

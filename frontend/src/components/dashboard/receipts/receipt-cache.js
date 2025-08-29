@@ -1,7 +1,8 @@
 // Centralized receipt caches to enable optimistic hydration across list + modal
 // Stored shape: id -> { data: <receiptLike>, ts: number, partial: boolean }
 
-export const DETAIL_TTL_MS = 120_000; // 2 minutes for non-terminal receipts
+// Increase TTL for non-terminal receipts to 10 minutes. Active statuses will be refreshed via SSE.
+export const DETAIL_TTL_MS = 600_000;
 export const TERMINAL_STATUSES = new Set(["processed", "failed", "completed", "canceled", "rejected"]);
 
 export const detailCache = new Map(); // receiptId (number|string) -> { data, ts, partial }

@@ -428,32 +428,44 @@ async def list_receipts_summary(
     user: User = Depends(user_with_optional_token),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    status: str | None = Query(
+        None,
+        description="Optional status filter (e.g. 'processing', 'completed')."
+    ),
 ) -> List[ReceiptSummary]:
-    """Fast summary list with Redis caching (5s TTL).
+    """Fast summary list with Redis caching (60s TTL after recent change).
 
-    Returns only minimal fields required for the table first paint.
+    Returns only minimal fields required for the table first paint. Supports optional status filter.
     """
-    cache_key = summary_cache_key(user.id, limit, offset)
+    # Incorporate status into cache key to avoid returning unfiltered results
+    base_key = summary_cache_key(user.id, limit, offset)
+    cache_key = f"{base_key}:status={status}" if status else base_key
     cached = await cache_get_json(cache_key)
     if isinstance(cached, list):  # shape already JSON
         try:
             return [ReceiptSummary(**item) for item in cached]
         except Exception:
             pass  # ignore malformed cache
-    # Query only required columns; extracted_data accessed lazily for merchant/total hints
-    query = (
-        select(Receipt.id, Receipt.filename, Receipt.status, Receipt.created_at, Receipt.updated_at, Receipt.extraction_progress, Receipt.audit_progress, Receipt.extracted_data)
-        .where(Receipt.owner_id == user.id)
-        .order_by(Receipt.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-    )
+    # Build base query (only required columns);
+    query = select(
+        Receipt.id,
+        Receipt.filename,
+        Receipt.status,
+        Receipt.created_at,
+        Receipt.updated_at,
+        Receipt.extraction_progress,
+        Receipt.audit_progress,
+        Receipt.extracted_data,
+    ).where(Receipt.owner_id == user.id)
+    if status:
+        query = query.where(Receipt.status == status)
+    query = query.order_by(Receipt.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     rows = result.all()
     summaries: list[ReceiptSummary] = []
     for row in rows:
-        # row is Row(tuple) -> destructure
-        (rid, fname, status, created_at, updated_at, extraction_progress, audit_progress, extracted_data) = row
+        # row is Row(tuple) -> destructure; avoid shadowing filter param 'status'
+        (rid, fname, row_status, created_at, updated_at, extraction_progress, audit_progress, extracted_data) = row
         merchant = None
         total = None
         payment_type = None
@@ -534,11 +546,11 @@ async def list_receipts_summary(
             ReceiptSummary(
                 id=rid,
                 filename=fname,
-                status=str(status.value if hasattr(status, "value") else status),
+                status=str(row_status).lower() if row_status else "unknown",
                 created_at=created_at,
                 updated_at=updated_at,
-                extraction_progress=extraction_progress,
-                audit_progress=audit_progress,
+                extraction_progress=extraction_progress or 0,
+                audit_progress=audit_progress or 0,
                 merchant=merchant if isinstance(merchant, str) else None,
                 total=total,
                 payment_type=payment_type,
@@ -546,17 +558,12 @@ async def list_receipts_summary(
                 payment_last4=payment_last4,
             )
         )
-    # Cache JSON-serializable form
+    # Cache JSON-serializable form with longer TTL to reduce load
     try:
         await cache_set_json(
             cache_key,
-            [
-                {
-                    **s.dict(),
-                }
-                for s in summaries
-            ],
-            ttl=5,
+            [ { **s.dict() } for s in summaries ],
+            ttl=60,
         )
     except Exception:
         pass
@@ -628,7 +635,8 @@ async def get_receipt(
         raise HTTPException(status_code=404, detail="Receipt not found")
     # Cache minimal period (5s)
     try:
-        await cache_set_json(ck, ReceiptRead.from_orm(receipt).dict(), ttl=5)
+        # Increase detail cache TTL for 60 seconds to reduce backend load
+        await cache_set_json(ck, ReceiptRead.from_orm(receipt).dict(), ttl=60)
     except Exception:
         pass
     return receipt
