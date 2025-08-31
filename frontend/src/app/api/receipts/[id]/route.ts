@@ -1,3 +1,4 @@
+import { revalidateTag } from "next/cache";
 import { auth } from "@clerk/nextjs/server";
 
 export const dynamic = "force-dynamic";
@@ -27,4 +28,82 @@ export async function GET(req: Request, ctx: { params: { id: string } | Promise<
 			"x-receipt-mode": userId ? "auth" : devBypass ? "dev-bypass" : "anon",
 		},
 	});
+}
+
+export async function PATCH(req: Request, ctx: { params: { id: string } | Promise<{ id: string }> }) {
+	const { userId, getToken } = auth();
+	const rawParams = await ctx.params;
+	const receiptId = rawParams.id;
+	const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+	// Try server-side token first; if absent, fall back to client-sent Authorization header
+	const token = userId ? await getToken?.() : null;
+	const incomingAuth = req.headers.get("authorization");
+	// If Clerk server token isn't available but client sent Authorization, preserve it verbatim
+	let forwardAuthHeader: string | undefined;
+	if (token) {
+		forwardAuthHeader = `Bearer ${token}`;
+	} else if (incomingAuth) {
+		forwardAuthHeader = incomingAuth; // already Bearer ...
+	}
+	let payload: unknown = null;
+	try {
+		payload = await req.json();
+	} catch {
+		payload = null;
+	}
+	const res = await fetch(`${backend}/receipts/${encodeURIComponent(receiptId)}`, {
+		method: "PATCH",
+		headers: {
+			"Content-Type": "application/json",
+			...(forwardAuthHeader ? { Authorization: forwardAuthHeader } : {}),
+		},
+		body: payload ? JSON.stringify(payload) : undefined,
+		cache: "no-store",
+	});
+	const text = await res.text();
+	if (res.ok) {
+		// Revalidate detail + summary caches if we have userId tags
+		try {
+			if (userId) {
+				revalidateTag(`receipt-${receiptId}`);
+				revalidateTag(`receipt-summary-${userId}`);
+			}
+		} catch {
+			// ignore JSON parse errors
+		}
+		return new Response(text, {
+			status: res.status,
+			headers: { "content-type": res.headers.get("content-type") || "application/json" },
+		});
+	}
+	return new Response(text || "error", { status: res.status });
+}
+
+export async function DELETE(req: Request, ctx: { params: { id: string } | Promise<{ id: string }> }) {
+	const { userId, getToken } = auth();
+	const rawParams = await ctx.params;
+	const receiptId = rawParams.id;
+	const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+	const token = userId ? await getToken?.() : null;
+	const incomingAuth = req.headers.get("authorization");
+	let forwardAuthHeader: string | undefined;
+	if (token) forwardAuthHeader = `Bearer ${token}`;
+	else if (incomingAuth) forwardAuthHeader = incomingAuth;
+	const res = await fetch(`${backend}/receipts/${encodeURIComponent(receiptId)}`, {
+		method: "DELETE",
+		headers: forwardAuthHeader ? { Authorization: forwardAuthHeader } : undefined,
+		cache: "no-store",
+	});
+	if (res.status === 204) {
+		try {
+			if (userId) {
+				revalidateTag(`receipt-summary-${userId}`);
+			}
+		} catch {
+			/* ignore */
+		}
+		return new Response(null, { status: 204 });
+	}
+	const text = await res.text();
+	return new Response(text || "delete failed", { status: res.status });
 }

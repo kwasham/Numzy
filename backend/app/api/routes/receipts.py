@@ -420,6 +420,8 @@ class ReceiptSummary(BaseModel):
     payment_type: str | None = None
     payment_brand: str | None = None
     payment_last4: str | None = None
+    # (NEW) include extracted_data so the frontend can fully hydrate the modal without an extra fetch
+    extracted_data: dict | None = None
 
 
 @router.get("/summary", response_model=List[ReceiptSummary])
@@ -456,6 +458,7 @@ async def list_receipts_summary(
         Receipt.extraction_progress,
         Receipt.audit_progress,
         Receipt.extracted_data,
+        # Note: we include extracted_data column so the client can render modal immediately.
     ).where(Receipt.owner_id == user.id)
     if status:
         query = query.where(Receipt.status == status)
@@ -542,11 +545,23 @@ async def list_receipts_summary(
                         payment_last4 = str(last4)[-4:] if last4 else None
         except Exception:
             pass
+        # Normalize status: unwrap Enum.value if present, lowercase, strip any enum class prefix like 'receiptstatus.'
+        norm_status = "unknown"
+        if row_status:
+            try:
+                raw = getattr(row_status, "value", row_status)
+                s = str(raw).strip().lower()
+                # If still 'receiptstatus.completed' -> take last segment
+                if "." in s:
+                    s = s.split(".")[-1]
+                norm_status = s or "unknown"
+            except Exception:  # pragma: no cover
+                norm_status = "unknown"
         summaries.append(
             ReceiptSummary(
                 id=rid,
                 filename=fname,
-                status=str(row_status).lower() if row_status else "unknown",
+                status=norm_status,
                 created_at=created_at,
                 updated_at=updated_at,
                 extraction_progress=extraction_progress or 0,
@@ -556,6 +571,7 @@ async def list_receipts_summary(
                 payment_type=payment_type,
                 payment_brand=payment_brand,
                 payment_last4=payment_last4,
+                extracted_data=extracted_data if isinstance(extracted_data, dict) else None,
             )
         )
     # Cache JSON-serializable form with longer TTL to reduce load

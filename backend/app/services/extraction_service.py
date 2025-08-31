@@ -54,7 +54,7 @@ class ExtractionService:
     """
 
     def __init__(self) -> None:
-        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-5")
+        self.model: str = os.getenv("EXTRACTION_MODEL", "gpt-4o-mini")
         self.debug: bool = os.getenv("EXTRACTION_DEBUG", "0").lower() in {"1", "true", "yes"}
         self.agents_available = HAS_AGENTS
         if self.debug:
@@ -84,7 +84,7 @@ class ExtractionService:
             "gpt5": "gpt-4o-mini",
         }
         primary_model = placeholder_map.get(primary_model.lower(), primary_model)
-        fb_env = os.getenv("EXTRACTION_MODEL_FALLBACKS", "gpt-4o-mini")
+        fb_env = os.getenv("EXTRACTION_MODEL_FALLBACKS", "")
         fallback_models = [m.strip() for m in fb_env.split(",") if m.strip()]
         # Ensure primary is first and unique ordering
         cascade: list[str] = []

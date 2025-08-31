@@ -26,11 +26,12 @@ import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
 import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
 import { parseAmount } from "@/lib/parse-amount";
-// Shared cache utilities now encapsulated inside the hook
 import { useReceiptDetails } from "@/hooks/use-receipt-details";
+// Shared cache utilities now encapsulated inside the hook
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
+import { previewCache } from "@/components/dashboard/receipts/receipt-cache";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const PREVIEW_BOX_HEIGHT = 420; // reserved vertical space to avoid layout jump
@@ -50,7 +51,7 @@ function safeNum(v, def = 0) {
 
 // (Network retry logic moved into hook implementation.)
 
-export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
+export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previewSrc: prefetchedPreview }) {
 	const router = useRouter();
 	const { getToken } = useAuth();
 
@@ -64,7 +65,7 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 		previewLoading,
 		previewRefreshing,
 		manualRefreshPreview: hookManualRefreshPreview,
-	} = useReceiptDetails({ open, receiptId, receipt: providedReceipt, providedReceipt });
+	} = useReceiptDetails({ open, receiptId, providedReceipt, prefetchedPreview });
 	const [lightboxOpen, setLightboxOpen] = React.useState(false);
 	// Provide legacy-shaped state objects for downstream rendering logic (minimize diff)
 	const detailState = React.useMemo(
@@ -307,11 +308,25 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 
 	// Reset image loaded flag when source changes
 	React.useEffect(() => {
-		// Reset when preview source OR target receipt changes
+		// Reset when target receipt changes
 		setImgLoaded(false);
-		// Don't carry over previous loadedForId so old image isn't shown for new id
 		setLoadedForId(null);
-	}, [previewSrc, receiptId]);
+	}, [receiptId]);
+
+	// If we have a prefetched + decoded preview (loaded flag) OR a blob: URL, mark as loaded immediately to skip skeleton.
+	React.useEffect(() => {
+		if (!receiptId || !previewSrc) return;
+		if (previewSrc.startsWith("blob:")) {
+			setImgLoaded(true);
+			setLoadedForId(receiptId);
+			return;
+		}
+		const cached = previewCache.get(receiptId) || previewCache.get(String(receiptId));
+		if (cached?.src && cached.loaded && cached.src.split("?")[0] === previewSrc.split("?")[0]) {
+			setImgLoaded(true);
+			setLoadedForId(receiptId);
+		}
+	}, [receiptId, previewSrc]);
 	const showSkeleton = previewState.loading && !previewSrc;
 	const showNoPreview = !previewState.loading && !previewSrc;
 
@@ -439,8 +454,11 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt }) {
 													alt="Receipt preview"
 													onClick={() => setLightboxOpen(true)}
 													onLoad={() => {
-														setImgLoaded(true);
-														setLoadedForId(receiptId);
+														// For non-blob URLs fallback to onLoad event; blob URLs are marked loaded earlier.
+														if (!previewSrc.startsWith("blob:")) {
+															setImgLoaded(true);
+															setLoadedForId(receiptId);
+														}
 													}}
 													sx={{
 														position: "absolute",

@@ -1,5 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
 
+// Simple in-memory suppression of repeated auth failures to avoid noisy 403 logs.
+// receiptId -> retry timestamp (ms)
+const authFailureBackoff: Map<string, number> = new Map();
+const AUTH_FAIL_COOLDOWN_MS = 30_000; // 30s
+
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request, ctx: { params: { id: string } | Promise<{ id: string }> }) {
@@ -8,16 +13,30 @@ export async function GET(req: Request, ctx: { params: { id: string } | Promise<
 	const rawParams = await ctx.params;
 	const receiptId = rawParams.id;
 	const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-	const urlObj = new URL(req.url);
-	const tokenFromQuery = urlObj.searchParams.get("token");
+	// We intentionally do NOT trust or use a client-provided token query param here:
+	// leaking the Clerk JWT into the URL was causing 401s once the token expired & also pollutes logs / caches.
+	// Instead we obtain the server-side token (if authenticated) and forward as Authorization only to the
+	// signing endpoint; the returned signed URL lets us fetch the thumbnail bytes without auth headers.
 	const headerToken = userId ? await getToken?.() : null;
-	const token = headerToken || tokenFromQuery;
-	// First ask for a signed thumbnail URL
+	// Rate-limit attempts if we recently failed auth
+	const now = Date.now();
+	const retryAt = authFailureBackoff.get(receiptId);
+	if (retryAt && retryAt > now) {
+		return new Response(null, { status: 204, headers: { "x-thumb-suppressed": "1" } });
+	}
+	// First ask for a signed thumbnail URL (auth required to prove ownership)
 	const signRes = await fetch(`${backend}/receipts/${encodeURIComponent(receiptId)}/thumbnail_url`, {
-		headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+		headers: headerToken ? { Authorization: `Bearer ${headerToken}` } : undefined,
 		cache: "no-store", // we only cache the image bytes
 	});
-	if (!signRes.ok) return new Response(null, { status: signRes.status });
+	if (!signRes.ok) {
+		// Convert auth issues (401/403) into silent 204 to reduce log noise and set backoff.
+		if (signRes.status === 401 || signRes.status === 403) {
+			authFailureBackoff.set(receiptId, now + AUTH_FAIL_COOLDOWN_MS);
+			return new Response(null, { status: 204, headers: { "x-thumb-auth": "fail" } });
+		}
+		return new Response(null, { status: signRes.status });
+	}
 	const { url } = await signRes.json().catch(() => ({ url: null }));
 	if (!url) return new Response(null, { status: 204 });
 	const abs = `${backend}${url}`;

@@ -19,6 +19,7 @@ export interface ReceiptSummary {
 	payment_type?: string | null;
 	payment_brand?: string | null;
 	payment_last4?: string | null;
+	extracted_data?: Record<string, unknown> | null; // full extracted_data now available
 }
 async function fetchSummaries(limit: number, token: string | null | undefined): Promise<ReceiptSummary[]> {
 	const internalUrl = `/api/receipts/summary?limit=${limit}`;

@@ -1,4 +1,4 @@
-version: "3.9"
+
 
 services:
   # NOTE: Local PostgreSQL service removed (2025-08-28) to enforce exclusive Neon usage.

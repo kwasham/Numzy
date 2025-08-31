@@ -58,6 +58,7 @@ export interface UseReceiptDetailsOptions {
 	open: boolean;
 	receiptId: number | string | null;
 	providedReceipt?: ReceiptLike | null; // partial or full receipt passed from parent (list)
+	prefetchedPreview?: string | null; // optional already-fetched preview URL
 }
 
 export interface UseReceiptDetailsResult {
@@ -75,6 +76,7 @@ export function useReceiptDetails({
 	open,
 	receiptId,
 	providedReceipt,
+	prefetchedPreview,
 }: UseReceiptDetailsOptions): UseReceiptDetailsResult {
 	const { getToken } = useAuth();
 
@@ -90,12 +92,22 @@ export function useReceiptDetails({
 		error: null,
 	});
 	const [previewState, setPreviewState] = React.useState<{ src: string | null; loading: boolean; refreshing: boolean }>(
-		{
-			src: null,
-			loading: false,
+		() => ({
+			src: prefetchedPreview || null,
+			loading: !prefetchedPreview,
 			refreshing: false,
-		}
+		})
 	);
+
+	// Track last receipt id to reset preview cleanly when switching quickly.
+	const lastPreviewIdRef = React.useRef<string | number | null>(null);
+	React.useEffect(() => {
+		if (!open) return;
+		if (lastPreviewIdRef.current !== receiptId) {
+			lastPreviewIdRef.current = receiptId;
+			setPreviewState({ src: prefetchedPreview || null, loading: !prefetchedPreview, refreshing: false });
+		}
+	}, [open, receiptId, prefetchedPreview]);
 
 	const detailAbortRef = React.useRef<AbortController | null>(null);
 	const previewAbortRef = React.useRef<AbortController | null>(null);
@@ -147,15 +159,20 @@ export function useReceiptDetails({
 		return () => controller.abort();
 	}, [open, receiptId, providedReceipt, getToken]);
 
-	// Preview fetch effect
+	// Preview fetch effect (no stale flash)
 	React.useEffect(() => {
 		if (!open || !receiptId) return;
 		if (previewAbortRef.current) previewAbortRef.current.abort();
 		const controller = new AbortController();
 		previewAbortRef.current = controller;
 		const cached = previewCache.get(receiptId) || previewCache.get(String(receiptId));
-		if (cached) setPreviewState({ src: cached.src, loading: false, refreshing: true });
-		else setPreviewState({ src: null, loading: true, refreshing: false });
+		if (cached && cached.src) {
+			setPreviewState({ src: cached.src, loading: false, refreshing: true });
+		} else if (prefetchedPreview && !cached) {
+			setPreviewState({ src: prefetchedPreview, loading: false, refreshing: true });
+		} else if (!cached) {
+			setPreviewState({ src: null, loading: true, refreshing: false });
+		}
 		(async () => {
 			try {
 				let token: string | null = null;
@@ -165,9 +182,8 @@ export function useReceiptDetails({
 					/* ignore */
 				}
 				const auth = token ? { Authorization: `Bearer ${token}` } : undefined;
-				const thumb = token
-					? `/api/receipts/${encodeURIComponent(receiptId)}/thumb?token=${encodeURIComponent(token)}`
-					: `/api/receipts/${encodeURIComponent(receiptId)}/thumb`;
+				// Thumbnail route performs auth internally; do not append JWT to URL.
+				const thumb = `/api/receipts/${encodeURIComponent(receiptId)}/thumb`;
 				let chosen: string | null = null;
 				try {
 					const r = await fetch(thumb, { cache: "no-store", signal: controller.signal });
@@ -203,7 +219,8 @@ export function useReceiptDetails({
 			}
 		})();
 		return () => controller.abort();
-	}, [open, receiptId, getToken]);
+		// Intentionally exclude previewState.src to avoid re-running and flashing stale image.
+	}, [open, receiptId, getToken, prefetchedPreview]);
 
 	// SSE update effect (status updates)
 	React.useEffect(() => {
@@ -233,8 +250,13 @@ export function useReceiptDetails({
 	// Provide preview with stable cache-busting param like original component
 	const previewSrc = React.useMemo(() => {
 		if (!previewState.src) return null;
-		const hasQuery = previewState.src.includes("?");
-		return `${previewState.src}${hasQuery ? "&" : "?"}rid=${encodeURIComponent(String(receiptId || ""))}`;
+		// If this is an object URL (already fully downloaded) return as is.
+		if (previewState.src.startsWith("blob:")) return previewState.src;
+		// Avoid layering multiple cache-bust params if already added in prefetch phase.
+		const base = previewState.src;
+		if (/([?&])rid=/.test(base)) return base; // already has rid
+		const join = base.includes("?") ? "&" : "?";
+		return `${base}${join}rid=${encodeURIComponent(String(receiptId || ""))}`;
 	}, [previewState.src, receiptId]);
 
 	return {
