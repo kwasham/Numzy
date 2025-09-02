@@ -14,12 +14,12 @@ import DialogContent from "@mui/material/DialogContent";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Link from "@mui/material/Link";
-import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { CheckCircleIcon } from "@phosphor-icons/react/dist/ssr/CheckCircle";
-import { MagnifyingGlassPlus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassPlus";
+// Removed image zoom icon import since preview is gone
+// import { MagnifyingGlassPlus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassPlus";
 import { PencilSimpleIcon } from "@phosphor-icons/react/dist/ssr/PencilSimple";
 import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
 
@@ -27,15 +27,11 @@ import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
 import { parseAmount } from "@/lib/parse-amount";
 import { useReceiptDetails } from "@/hooks/use-receipt-details";
-// Shared cache utilities now encapsulated inside the hook
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
-import { previewCache } from "@/components/dashboard/receipts/receipt-cache";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const PREVIEW_BOX_HEIGHT = 420; // reserved vertical space to avoid layout jump
-// Caches sourced from shared receipt-cache module
 
 // Numeric helpers
 function safeNum(v, def = 0) {
@@ -49,8 +45,6 @@ function safeNum(v, def = 0) {
 	return def;
 }
 
-// (Network retry logic moved into hook implementation.)
-
 export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previewSrc: prefetchedPreview }) {
 	const router = useRouter();
 	const { getToken } = useAuth();
@@ -61,30 +55,55 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 		loading,
 		refreshing,
 		error,
-		previewSrc,
-		previewLoading,
-		previewRefreshing,
-		manualRefreshPreview: hookManualRefreshPreview,
+		// image/preview removed
 	} = useReceiptDetails({ open, receiptId, providedReceipt, prefetchedPreview });
-	const [lightboxOpen, setLightboxOpen] = React.useState(false);
+	// Minimal: fetch a signed download URL and expose a single button to open the receipt
+	const [downloadHref, setDownloadHref] = React.useState(null);
+	const [imageError, setImageError] = React.useState(false);
+
 	// Provide legacy-shaped state objects for downstream rendering logic (minimize diff)
 	const detailState = React.useMemo(
 		() => ({ data: receipt, loading, refreshing, error }),
 		[receipt, loading, refreshing, error]
 	);
-	const previewState = React.useMemo(
-		() => ({ src: previewSrc, loading: previewLoading, refreshing: previewRefreshing }),
-		[previewSrc, previewLoading, previewRefreshing]
-	);
-	const manualRefreshPreview = React.useCallback(() => hookManualRefreshPreview(), [hookManualRefreshPreview]);
 
 	const handleClose = React.useCallback(() => {
 		router.push(paths.dashboard.receipts);
 	}, [router]);
 
-	// Effects moved into useReceiptDetails hook.
-
-	// Poll receipt while status is pending/processing to update details and attempt preview again
+	// Fetch signed download URL on open/id change
+	React.useEffect(() => {
+		let cancelled = false;
+		async function run() {
+			if (!open || !receiptId) return;
+			try {
+				let token = null;
+				try {
+					token = await getToken?.();
+				} catch {
+					/* optional token fetch failed */
+				}
+				const res = await fetch(`${API_URL}/receipts/${encodeURIComponent(receiptId)}/download_url`, {
+					headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+					cache: "no-store",
+				});
+				if (!res.ok) return;
+				const data = await res.json();
+				if (!cancelled && data?.url) {
+					const abs = data.url.startsWith("http") ? data.url : `${API_URL}${data.url}`;
+					setDownloadHref(abs);
+				}
+			} catch {
+				if (!cancelled) setDownloadHref(null);
+			}
+		}
+		setDownloadHref(null);
+		setImageError(false);
+		run();
+		return () => {
+			cancelled = true;
+		};
+	}, [open, receiptId, getToken]);
 
 	// Only display receipt details if they belong to the currently requested receiptId
 	// Normalize id types to string to avoid mismatch causing hidden details
@@ -302,34 +321,6 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 		"—"
 	);
 
-	// Simple cache bust: append a version param so refreshed signed URLs always reload
-	const [imgLoaded, setImgLoaded] = React.useState(false);
-	const [loadedForId, setLoadedForId] = React.useState(null);
-
-	// Reset image loaded flag when source changes
-	React.useEffect(() => {
-		// Reset when target receipt changes
-		setImgLoaded(false);
-		setLoadedForId(null);
-	}, [receiptId]);
-
-	// If we have a prefetched + decoded preview (loaded flag) OR a blob: URL, mark as loaded immediately to skip skeleton.
-	React.useEffect(() => {
-		if (!receiptId || !previewSrc) return;
-		if (previewSrc.startsWith("blob:")) {
-			setImgLoaded(true);
-			setLoadedForId(receiptId);
-			return;
-		}
-		const cached = previewCache.get(receiptId) || previewCache.get(String(receiptId));
-		if (cached?.src && cached.loaded && cached.src.split("?")[0] === previewSrc.split("?")[0]) {
-			setImgLoaded(true);
-			setLoadedForId(receiptId);
-		}
-	}, [receiptId, previewSrc]);
-	const showSkeleton = previewState.loading && !previewSrc;
-	const showNoPreview = !previewState.loading && !previewSrc;
-
 	return (
 		<Dialog
 			maxWidth="sm"
@@ -419,132 +410,55 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 								))}
 							</PropertyList>
 						</Card>
-						{previewSrc ? (
-							<Card sx={{ borderRadius: 1 }} variant="outlined">
-								<Box sx={{ p: 2 }}>
-									<Box
-										key={`preview-${receiptId}`}
-										sx={{ position: "relative", height: PREVIEW_BOX_HEIGHT, width: "100%" }}
-									>
-										{/* Background placeholder to lock layout height */}
-										<Box
-											sx={{
-												position: "absolute",
-												inset: 0,
-												borderRadius: 1,
-												bgcolor: "background.default",
-												border: "1px solid",
-												borderColor: "divider",
-												overflow: "hidden",
-											}}
-										>
-											{!imgLoaded && (
-												<Skeleton
-													variant="rectangular"
-													animation="wave"
-													width="100%"
-													height="100%"
-													sx={{ borderRadius: 0 }}
-												/>
-											)}
-											{previewSrc && (
-												<Box
-													component="img"
-													src={previewSrc}
-													alt="Receipt preview"
-													onClick={() => setLightboxOpen(true)}
-													onLoad={() => {
-														// For non-blob URLs fallback to onLoad event; blob URLs are marked loaded earlier.
-														if (!previewSrc.startsWith("blob:")) {
-															setImgLoaded(true);
-															setLoadedForId(receiptId);
-														}
-													}}
-													sx={{
-														position: "absolute",
-														inset: 0,
-														width: "100%",
-														height: "100%",
-														objectFit: "contain",
-														cursor: "zoom-in",
-														transition: "opacity 240ms ease",
-														opacity: imgLoaded && loadedForId === receiptId ? 1 : 0,
-													}}
-												/>
-											)}
-										</Box>
-										<Tooltip title="Zoom">
-											<IconButton
-												color="primary"
-												onClick={() => setLightboxOpen(true)}
-												disabled={!previewSrc || !imgLoaded || loadedForId !== receiptId}
-												size="small"
-												sx={{
-													position: "absolute",
-													top: 8,
-													right: 8,
-													bgcolor: "background.paper",
-													boxShadow: 2,
-													opacity: previewSrc && loadedForId === receiptId ? 1 : 0.4,
-												}}
-											>
-												<MagnifyingGlassPlus size={16} />
-											</IconButton>
-										</Tooltip>
-									</Box>
-								</Box>
-							</Card>
-						) : showSkeleton ? (
-							<Card sx={{ borderRadius: 1 }} variant="outlined">
-								<Box sx={{ p: 2 }}>
-									<Skeleton variant="rectangular" width="100%" height={320} sx={{ borderRadius: 1 }} />
-									<Box sx={{ mt: 1, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-										<Typography variant="caption" color="text.secondary">
-											Loading preview…
-										</Typography>
-									</Box>
-								</Box>
-							</Card>
-						) : showNoPreview ? (
-							<Card sx={{ borderRadius: 1 }} variant="outlined">
-								<Box sx={{ p: 4, display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
-									<Typography variant="body2" color="text.secondary">
-										No preview available
-									</Typography>
-									<Typography variant="caption" color="text.secondary" align="center">
-										(The file may still be processing or is an unsupported format)
-									</Typography>
-									<Box sx={{ mt: 2 }}>
-										<Button
-											size="small"
-											variant="outlined"
-											onClick={manualRefreshPreview}
-											disabled={previewState.loading}
-										>
-											Refresh preview
-										</Button>
-									</Box>
-								</Box>
-							</Card>
-						) : null}
-						{lightboxOpen && previewSrc && (
-							<Dialog open onClose={() => setLightboxOpen(false)} maxWidth="md" fullWidth>
-								<DialogContent sx={{ position: "relative", bgcolor: "black", p: 0 }}>
-									<IconButton
-										onClick={() => setLightboxOpen(false)}
-										sx={{ position: "absolute", top: 8, right: 8, color: "white", zIndex: 1 }}
-									>
-										<XIcon size={20} />
-									</IconButton>
+
+            {/* Inline receipt display */}
+				<Card sx={{ borderRadius: 1 }} variant="outlined">
+					<Box sx={{ p: 2 }}>
+						<Box
+							sx={{
+								position: "relative",
+								width: "100%",
+								height: 520,
+								border: "1px solid",
+								borderColor: "divider",
+								borderRadius: 1,
+								overflow: "hidden",
+								bgcolor: "background.default",
+							}}
+						>
+							{downloadHref ? (
+								imageError ? (
+									<iframe src={downloadHref} title="Receipt" style={{ width: "100%", height: "100%", border: 0 }} />
+								) : (
 									<Box
 										component="img"
-										src={previewSrc}
-										alt="Receipt full preview"
-										sx={{ width: "100%", height: "auto", display: "block", objectFit: "contain" }}
+										src={downloadHref}
+										alt="Receipt"
+										onError={() => setImageError(true)}
+										sx={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
 									/>
-								</DialogContent>
-							</Dialog>
-						)}
+								)
+							) : (
+								<Box
+									sx={{
+										position: "absolute",
+										inset: 0,
+										display: "flex",
+										alignItems: "center",
+										justifyContent: "center",
+									}}
+								>
+									<Typography variant="body2" color="text.secondary">
+										Preparing receipt…
+									</Typography>
+								</Box>
+							)}
+						</Box>
+					</Box>
+				</Card>
+
+
+
 					</Stack>
 					<Stack spacing={3}>
 						<Typography variant="h6">Line items</Typography>
@@ -641,6 +555,7 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 						</Card>
 					</Stack>
 				</Stack>
+
 			</DialogContent>
 		</Dialog>
 	);

@@ -35,7 +35,7 @@ import {
 
 import { useReceiptsSelection } from "./receipts-selection-context";
 
-// Fetch Clerk token once (no refresh logic needed for short-lived prefetch)
+
 function useTokenOnce() {
 	const { getToken } = useAuth();
 	const [token, setToken] = React.useState();
@@ -56,32 +56,24 @@ function useTokenOnce() {
 	return token;
 }
 
-// Adapter to map receipt rows into the shape expected by the Orders table columns
 function toDisplayRow(r) {
 	const ed = r.extracted_data && typeof r.extracted_data === "object" ? r.extracted_data : {};
 	const merchant = ed.merchant ?? ed.vendor ?? ed.merchant_name ?? "—";
 	const totalRaw = ed.total ?? ed.amount_total ?? ed.amount;
 	const totalAmount = parseAmount(totalRaw);
-
-	// Transaction date: prefer extracted time value if parsable, else fallback to created_at
 	let transactionDate = new Date(r.created_at);
 	const timeRaw = ed.time || ed.transaction_time || ed.transactionDate || null;
 	if (timeRaw) {
-		// Attempt parse with dayjs; fallback to Date constructor
 		const candidate = dayjs(timeRaw);
-		if (candidate.isValid()) {
-			transactionDate = candidate.toDate();
-		} else {
+		if (candidate.isValid()) transactionDate = candidate.toDate();
+		else {
 			const alt = new Date(timeRaw);
 			if (!Number.isNaN(alt.getTime())) transactionDate = alt;
 		}
 	}
-
-	// Derive payment method (brand + last4) if present in extracted data
 	const pmSource = ed.payment_method || ed.payment || ed.card || null;
 	let paymentMethod = null;
 	if (pmSource && typeof pmSource === "object") {
-		// candidate brand/type fields
 		const rawBrand =
 			pmSource.brand || pmSource.type || pmSource.card_brand || pmSource.scheme || pmSource.network || "";
 		const norm = String(rawBrand)
@@ -105,9 +97,7 @@ function toDisplayRow(r) {
 			(pmSource.number && String(pmSource.number).slice(-4)) ||
 			(pmSource.card_number && String(pmSource.card_number).slice(-4)) ||
 			null;
-		if (type) {
-			paymentMethod = { type, brand: rawBrand, last4 };
-		}
+		if (type) paymentMethod = { type, brand: rawBrand, last4 };
 	}
 	return {
 		id: r.id,
@@ -131,20 +121,17 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 				spacing={2}
 				sx={{ alignItems: "center" }}
 				onMouseEnter={() => {
-					// If we ever want to prefetch preview on hover, trigger lightweight fetch here
-					// Skip if preview already cached
-					if (!token) return; // avoid 401/403 spam before auth ready
+					if (!token) return;
 					if (previewCache.get(row.id) || previewCache.get(String(row.id))) return;
-					if (!shouldAttemptThumb(row.id)) return; // cooldown
+					if (!shouldAttemptThumb(row.id)) return;
 					const thumb = `/api/receipts/${encodeURIComponent(row.id)}/thumb`;
 					try {
 						const img = new Image();
 						img.addEventListener("load", () => setPreview(row.id, thumb, true));
 						img.addEventListener("error", () => markThumbFailure(row.id));
-						// Append lightweight pre param (cache-busting without conflicting with later rid param logic)
 						img.src = `${thumb}${thumb.includes("?") ? "&" : "?"}pre=1`;
 					} catch {
-						/* ignore */
+						// ignore thumbnail prefetch failure
 					}
 				}}
 			>
@@ -166,30 +153,31 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 						component={RouterLink}
 						href={paths.dashboard.receiptsPreview(row.id)}
 						sx={{ cursor: "pointer" }}
-						onClick={(e) => {
-							// Intercept to ensure blob is prefetched before navigation for instant modal image.
-							if (previewCache.get(row.id)?.loaded) return; // already ready, allow default
-							if (prewarmPreview) {
-								e.preventDefault();
-								prewarmPreview(row.id).then(() => {
-									// After prewarm push shallow to update URL (modal will open)
-									globalThis.history.pushState({}, "", paths.dashboard.receiptsPreview(row.id));
-									// Dispatch a popstate-based custom event if needed (Next router already notices search param change in App Router env)
-								});
+						onClick={() => {
+							// Always navigate immediately; prewarm in background for faster modal image.
+							if (prewarmPreview && !previewCache.get(row.id)) {
+								try {
+									prewarmPreview(row.id);
+								} catch {
+									/* ignore */
+								}
 							}
+							if (process.env.NEXT_PUBLIC_DEBUG_RECEIPTS === "true") {
+								console.debug("[receipts-table] navigate to preview", row.id);
+							}
+							// Let the default link navigation occur (href already set)
 						}}
 						onFocus={() => {
-							// Preload on keyboard focus as well
 							if (previewCache.get(row.id) || previewCache.get(String(row.id))) return;
+							if (!shouldAttemptThumb(row.id)) return;
 							const thumb = `/api/receipts/${encodeURIComponent(row.id)}/thumb`;
 							try {
-								if (!shouldAttemptThumb(row.id)) return; // cooldown
 								const img = new Image();
 								img.addEventListener("load", () => setPreview(row.id, thumb, true));
 								img.addEventListener("error", () => markThumbFailure(row.id));
 								img.src = `${thumb}${thumb.includes("?") ? "&" : "?"}pre=1`;
 							} catch {
-								/* ignore */
+								// ignore prefetch focus error
 							}
 						}}
 						variant="subtitle2"
@@ -221,7 +209,6 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 	{
 		formatter: (row) => {
 			if (!row.paymentMethod) return null;
-
 			const mapping = {
 				mastercard: { name: "Mastercard", logo: "/assets/payment-method-1.png" },
 				visa: { name: "Visa", logo: "/assets/payment-method-2.png" },
@@ -230,7 +217,6 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 				googlepay: { name: "Google Pay", logo: "/assets/payment-method-5.png" },
 			};
 			const { name, logo } = mapping[row.paymentMethod.type] ?? { name: "Unknown", logo: null };
-
 			return (
 				<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
 					<Avatar sx={{ bgcolor: "var(--mui-palette-background-paper)", boxShadow: "var(--mui-shadows-8)" }}>
@@ -264,7 +250,6 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 	},
 	{
 		formatter: (row) => {
-			// Defensive normalization (handles enum-style strings like 'receiptstatus.completed')
 			const raw = (row.status || "").toString().trim().toLowerCase();
 			const key = raw.includes(".") ? raw.split(".").pop() : raw;
 			const mapping = {
@@ -288,11 +273,7 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 					icon: <XCircleIcon color="var(--mui-palette-error-main)" weight="fill" />,
 					color: "error",
 				},
-				rejected: {
-					label: "Rejected",
-					icon: <MinusIcon color="var(--mui-palette-error-main)" />,
-					color: "error",
-				},
+				rejected: { label: "Rejected", icon: <MinusIcon color="var(--mui-palette-error-main)" />, color: "error" },
 				failed: {
 					label: "Failed",
 					icon: <XCircleIcon color="var(--mui-palette-error-main)" weight="fill" />,
@@ -309,32 +290,29 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 		width: "120px",
 	},
 	{
-		formatter: (row) => {
-			return (
-				<Select
-					variant="outlined"
-					size="small"
-					value={row.category || ""}
-					onChange={(e) => handleCategoryChange(row.id, e.target.value || undefined, row)}
-					displayEmpty
-					fullWidth
-					MenuProps={{ disableScrollLock: true }}
-					// Prevent row click selection toggling when interacting with dropdown
-					onClick={(e) => e.stopPropagation()}
-					onFocus={(e) => e.stopPropagation()}
-					style={{ minWidth: 180 }}
-				>
-					<MenuItem value="">
-						<em>Unassigned</em>
+		formatter: (row) => (
+			<Select
+				variant="outlined"
+				size="small"
+				value={row.category || ""}
+				onChange={(e) => handleCategoryChange(row.id, e.target.value || undefined, row)}
+				displayEmpty
+				fullWidth
+				MenuProps={{ disableScrollLock: true }}
+				onClick={(e) => e.stopPropagation()}
+				onFocus={(e) => e.stopPropagation()}
+				style={{ minWidth: 180 }}
+			>
+				<MenuItem value="">
+					<em>Unassigned</em>
+				</MenuItem>
+				{Object.keys(RECEIPT_CATEGORY_MAP).map((cat) => (
+					<MenuItem key={cat} value={cat}>
+						{cat}
 					</MenuItem>
-					{Object.keys(RECEIPT_CATEGORY_MAP).map((cat) => (
-						<MenuItem key={cat} value={cat}>
-							{cat}
-						</MenuItem>
-					))}
-				</Select>
-			);
-		},
+				))}
+			</Select>
+		),
 		name: "Category",
 		width: "220px",
 	},
@@ -344,13 +322,16 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 				<IconButton
 					component={RouterLink}
 					href={paths.dashboard.receiptsPreview(row.id)}
-					onClick={(e) => {
-						if (previewCache.get(row.id)?.loaded) return;
-						if (prewarmPreview) {
-							e.preventDefault();
-							prewarmPreview(row.id).then(() => {
-								globalThis.history.pushState({}, "", paths.dashboard.receiptsPreview(row.id));
-							});
+					onClick={() => {
+						if (prewarmPreview && !previewCache.get(row.id)) {
+							try {
+								prewarmPreview(row.id);
+							} catch {
+								/* ignore */
+							}
+						}
+						if (process.env.NEXT_PUBLIC_DEBUG_RECEIPTS === "true") {
+							console.debug("[receipts-table] icon navigate to preview", row.id);
 						}
 					}}
 				>
@@ -368,17 +349,13 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 export function ReceiptsTable({ rows, prewarmPreview, token: tokenProp }) {
 	const tokenAuto = useTokenOnce();
 	const token = tokenProp === undefined ? tokenAuto : tokenProp;
-	// Map of optimistic category overrides keyed by receipt id
 	const [categoryOverrides, setCategoryOverrides] = React.useState({});
-
-	// Track receipts that have been deleted (so we skip PATCH attempts / rollbacks cleanly)
 	const deletedIdsRef = React.useRef(new Set());
 	React.useEffect(() => {
 		function onDeleted(e) {
 			const id = e?.detail?.id;
 			if (id == null) return;
 			deletedIdsRef.current.add(id);
-			// If we still show a category override for a deleted id, remove it to prevent stale UI
 			setCategoryOverrides((prev) => {
 				if (!(id in prev)) return prev;
 				const clone = { ...prev };
@@ -394,52 +371,44 @@ export function ReceiptsTable({ rows, prewarmPreview, token: tokenProp }) {
 		() =>
 			rows.map((r) => {
 				const base = toDisplayRow(r);
-				// Extract current category (may be string or array) from extracted_data
 				let existingCategory;
 				try {
 					const rawCat = r?.extracted_data?.category;
 					if (Array.isArray(rawCat)) existingCategory = rawCat[0];
 					else if (typeof rawCat === "string") existingCategory = rawCat;
 				} catch {
-					/* swallow */
+					// ignore malformed extracted_data.category
 				}
 				return { ...base, category: categoryOverrides[r.id] ?? existingCategory, __orig: r };
 			}),
 		[rows, categoryOverrides]
 	);
+
 	const { selected, deselectAll, deselectOne, selectAll, selectOne } = useReceiptsSelection();
-	// Normalize selection (context provides a Set)
 	const selectedCount = React.useMemo(() => (selected ? (selected.size ?? (selected.length || 0)) : 0), [selected]);
 
 	const handleCategoryChange = React.useCallback(
 		async (id, newCategory, row) => {
 			if (deletedIdsRef.current.has(id)) {
-				// Skip interaction on a deleted receipt
 				toast.error("Receipt was deleted – category not updated");
 				return;
 			}
-			// optimistic override + stats event
 			setCategoryOverrides((prev) => ({ ...prev, [id]: newCategory }));
 			const prevCategory = row.category || null;
 			const amount = typeof row.totalAmount === "number" ? row.totalAmount : 0;
 			try {
 				globalThis.dispatchEvent(
-					new CustomEvent("receipt:category", {
-						detail: { id, category: newCategory || null, prevCategory, amount },
-					})
+					new CustomEvent("receipt:category", { detail: { id, category: newCategory || null, prevCategory, amount } })
 				);
 			} catch {
-				/* ignore */
+				// ignore dispatch error
 			}
-
-			// Build updated extracted_data preserving existing fields
 			const orig = row?.__orig || rows.find((r) => r.id === id);
 			const existing = (orig && typeof orig.extracted_data === "object" && orig.extracted_data) || {};
 			const updated = { ...existing };
 			if (newCategory) updated.category = newCategory;
 			else delete updated.category;
-			if (!token) return; // cannot persist without auth token
-
+			if (!token) return;
 			const rollback = (reason) => {
 				setCategoryOverrides((prev) => {
 					const clone = { ...prev };
@@ -454,11 +423,10 @@ export function ReceiptsTable({ rows, prewarmPreview, token: tokenProp }) {
 						})
 					);
 				} catch {
-					/* ignore */
+					// ignore dispatch rollback error
 				}
 				if (reason) toast.error(reason);
 			};
-
 			try {
 				const res = await fetch(`/api/receipts/${id}`, {
 					method: "PATCH",
@@ -504,7 +472,6 @@ export function ReceiptsTable({ rows, prewarmPreview, token: tokenProp }) {
 						<Button size="small" onClick={deselectAll} variant="outlined">
 							Clear
 						</Button>
-						{/* Delete action removed */}
 					</Stack>
 				</Box>
 			) : null}
@@ -529,7 +496,8 @@ export function ReceiptsTable({ rows, prewarmPreview, token: tokenProp }) {
 					</Typography>
 				</Box>
 			) : null}
-			{/* Delete dialogs removed */}
 		</React.Fragment>
 	);
 }
+
+export default ReceiptsTable;

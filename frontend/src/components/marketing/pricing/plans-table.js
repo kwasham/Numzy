@@ -9,6 +9,8 @@ import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 
+import { BillingButtons } from "@/components/billing/billing-buttons";
+
 import { Plan } from "./plan";
 import { generatePlanFeatures, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta, RAW_PRICING } from "./pricing-config";
 
@@ -160,6 +162,8 @@ export function PlansTable() {
 								const discountPercent = isYear ? meta.discountPercent : undefined;
 								const { name, description, recommended } = PLAN_METADATA[id];
 								const featureEntries = featureDeltaMap[id];
+								// Provide a real checkout action for Pro; keep defaults for others to minimize risk.
+								const action = id === "pro" ? <BillingButtons size="large" /> : undefined;
 								return (
 									<Grid size={{ xs: 12, sm: 6, md: 3 }} key={id} data-pricing-card="true" data-plan={id}>
 										<Plan
@@ -174,6 +178,7 @@ export function PlansTable() {
 											discountPercent={discountPercent}
 											recommended={recommended}
 											selected={selectedPlan === id}
+											action={action}
 											onSelect={(planId) => {
 												setSelectedPlan(planId);
 												try {

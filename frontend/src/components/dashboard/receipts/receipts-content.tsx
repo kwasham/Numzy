@@ -57,7 +57,10 @@ async function prewarmPreview(id: number | string) {
 			if (!res.ok) return null;
 			const ct = res.headers.get("content-type") || "";
 			if (!ct.startsWith("image")) return null;
+			// Skip proxy placeholders so the modal can perform its own retries and show explicit fallback.
+			if (res.headers.get("x-thumb-fallback")) return null;
 			const blob = await res.blob();
+			if (blob.size < 300) return null; // heuristic: likely 1x1 or tiny placeholder
 			const objectUrl = URL.createObjectURL(blob);
 			setPreview(id, objectUrl, true, true);
 			return objectUrl;

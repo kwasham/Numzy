@@ -90,7 +90,8 @@ class Settings(BaseSettings):
     # Auth
     # Disable auth bypass by default for improved security.  Override in .env
     # or via environment variable only when running locally.
-    DEV_AUTH_BYPASS: bool = Field(default=False)
+    DEV_AUTH_BYPASS: bool = Field(default=False, env="DEV_AUTH_BYPASS")
+    DEBUG: bool = Field(default=False, env="DEBUG")
     CLERK_SECRET_KEY: Optional[str] = Field(default=None)
     # Additional Clerk settings allow custom JWKS and API endpoints plus claim
     # verification.  These correspond to the values used in `app.core.security`.

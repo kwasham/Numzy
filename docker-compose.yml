@@ -1,5 +1,3 @@
-
-
 services:
   # NOTE: Local PostgreSQL service removed (2025-08-28) to enforce exclusive Neon usage.
   # If you need a local Postgres again, reintroduce a service named `postgres` in a feature branch.
@@ -52,6 +50,7 @@ services:
     environment:
       PYTHONPATH: /app
       DEV_AUTH_BYPASS: "false"
+      ENVIRONMENT: production
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       # Neon URL must be provided via .env (ALEMBIC_DATABASE_URL and/or DATABASE_URL / DATABASE_AUTHENTICATED_URL)
@@ -102,6 +101,7 @@ services:
       MINIO_BUCKET_NAME: receipts
       STORAGE_BACKEND: minio
       DEV_AUTH_BYPASS: "false"
+      ENVIRONMENT: production
       # Intentionally no local fallback; Neon variables required.
     depends_on:
       - api

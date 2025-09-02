@@ -23,20 +23,15 @@ export interface ReceiptSummary {
 }
 async function fetchSummaries(limit: number, token: string | null | undefined): Promise<ReceiptSummary[]> {
 	const internalUrl = `/api/receipts/summary?limit=${limit}`;
-	const devBypass = process.env.NEXT_PUBLIC_DEV_AUTH_BYPASS === "true" || process.env.DEV_AUTH_BYPASS === "true";
 	let internalData: ReceiptSummary[] | null = null;
 	let internalMode: string | null = null;
 	try {
-		// Allow Next.js route-level caching (internal route decides revalidate/tags); avoid no-store here.
 		const res = await fetch(internalUrl);
 		internalMode = res.headers.get("x-receipts-summary-mode");
 		if (res.ok) {
 			internalData = (await res.json()) as ReceiptSummary[];
 			if (process.env.NODE_ENV !== "production") {
 				console.debug("[receipts] internal summary", { count: internalData.length, mode: internalMode });
-				if (internalData.length === 0) {
-					console.debug("[receipts] internal summary empty", { mode: internalMode, tokenPresent: !!token });
-				}
 			}
 		} else if (process.env.NODE_ENV !== "production") {
 			console.warn("[receipts] internal summary non-ok", res.status);
@@ -44,13 +39,10 @@ async function fetchSummaries(limit: number, token: string | null | undefined): 
 	} catch (error) {
 		if (process.env.NODE_ENV !== "production") console.warn("[receipts] internal summary error", error);
 	}
-	if (internalData && internalData.length > 0) return internalData; // happy path
 
-	// Backend fallback conditions:
-	// 1. Dev bypass (as before)
-	// 2. OR authenticated client (token present) but internal returned empty/none and mode !== 'auth'
-	const allowBackendFallback = devBypass || (token && internalMode !== "auth");
-	if (allowBackendFallback && token) {
+	// If we have a user token and internal mode is not 'auth', prefer backend to avoid stale anon cache.
+	const shouldPreferBackend = !!token && internalMode !== "auth";
+	if (shouldPreferBackend && token) {
 		try {
 			const backendUrl = `${API_URL}/receipts/summary?limit=${limit}`;
 			const res = await fetch(backendUrl, {
@@ -60,12 +52,29 @@ async function fetchSummaries(limit: number, token: string | null | undefined): 
 			if (res.ok) {
 				const data = (await res.json()) as ReceiptSummary[];
 				if (process.env.NODE_ENV !== "production") {
-					console.debug("[receipts] backend fallback summary", { count: data.length, devBypass, internalMode });
+					console.debug("[receipts] backend preferred summary", { count: data.length, internalMode });
 				}
 				return data;
 			}
 		} catch (error) {
 			if (process.env.NODE_ENV !== "production") console.warn("[receipts] backend summary error", error);
+		}
+	}
+
+	// Otherwise, if internal returned data (auth or anon) use it.
+	if (internalData && internalData.length > 0) return internalData;
+
+	// Final fallback: backend if token (even when internal empty)
+	if (token) {
+		try {
+			const backendUrl = `${API_URL}/receipts/summary?limit=${limit}`;
+			const res = await fetch(backendUrl, {
+				headers: { Authorization: `Bearer ${token}` },
+				cache: "no-store",
+			});
+			if (res.ok) return (await res.json()) as ReceiptSummary[];
+		} catch {
+			/* ignore */
 		}
 	}
 	return internalData || [];
