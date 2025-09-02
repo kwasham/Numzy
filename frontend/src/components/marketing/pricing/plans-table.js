@@ -43,10 +43,13 @@ export function PlansTable() {
 		}
 	}, []);
 	// Hide custom priced tiers (monthly 0) except free
+	// Build list of plan ids to display. We intentionally hide the free plan card
+	// (still keeping its metadata for internal use / upgrade flows) and any
+	// custom-priced tiers with monthly === 0.
 	const ids = React.useMemo(
 		() =>
 			PLAN_ORDER.filter((id) => {
-				if (id === "free") return true;
+				if (id === "free") return false; // hide free tier card
 				const p = RAW_PRICING[id];
 				return p && p.monthly > 0;
 			}),
@@ -145,13 +148,22 @@ export function PlansTable() {
 					<div>
 						<Grid
 							container
-							spacing={2}
-							wrap="nowrap"
+							// Use responsive row/column spacing for better visual separation
+							rowSpacing={{ xs: 2, md: 4 }}
+							columnSpacing={{ xs: 2, md: 4 }}
+							wrap="wrap"
 							sx={{
 								overflowX: { xs: "auto", md: "visible" },
-								py: 1,
+								py: { xs: 1, md: 2 },
 								scrollSnapType: { xs: "x mandatory", md: "none" },
-								"& > .MuiGrid-item": { scrollSnapAlign: { xs: "start", md: "none" } },
+								flexWrap: { xs: "nowrap", md: "wrap" }, // keep horizontal scroll on mobile, wrap on desktop
+								justifyContent: { xs: "flex-start", md: "center" },
+								alignItems: "stretch",
+								"& > .MuiGrid-item": {
+									scrollSnapAlign: { xs: "start", md: "none" },
+									// Ensure a reasonable min width so horizontal scroll feels snappy on mobile
+									minWidth: { xs: 260, sm: 300, md: "auto" },
+								},
 							}}
 						>
 							{ids.map((id) => {
