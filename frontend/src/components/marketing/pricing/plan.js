@@ -43,21 +43,13 @@ export function Plan({
 	const effectiveSelected = hasControlledSelected ? selected : internalSelected;
 	const [busy, setBusy] = React.useState(false);
 	const { getToken } = useAuth?.() || {};
-	// Resolve personal plan price ID with sensible fallbacks. If a dedicated personal
-	// price is not configured we fall back to the Pro monthly so the flow still
-	// works in dev/demo environments.
-	const PERSONAL_PRICE_ID =
-		process.env.NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY || process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY || "";
+	// Resolve Stripe price IDs (frontend-visible) – any missing value will be handled gracefully.
+	const PRICE_IDS = {
+		personal: process.env.NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY || "",
+		pro: process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY || "",
+	};
 
 	async function startPersonalCheckout() {
-		// Provide immediate feedback & log if misconfigured.
-		if (!PERSONAL_PRICE_ID) {
-			console.error(
-				"No Stripe price ID configured for personal plan (expected NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY or fallback)."
-			);
-			alert("Checkout temporarily unavailable. Please try again later.");
-			return;
-		}
 		try {
 			setBusy(true);
 			let authHeader = {};
@@ -68,31 +60,36 @@ export function Plan({
 				/* ignore auth retrieval error */
 			}
 			const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+			// If no explicit personal price ID is configured, omit price_id so backend uses its default (likely Pro).
+			const body = PRICE_IDS.personal ? { price_id: PRICE_IDS.personal } : undefined;
+			if (!PRICE_IDS.personal) {
+				console.warn(
+					"Personal plan price env var missing (NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY). Falling back to backend default checkout."
+				);
+			}
 			const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/billing/checkout`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
-				body: JSON.stringify({ price_id: PERSONAL_PRICE_ID }),
+				body: JSON.stringify(body || {}),
 				credentials: "include",
 			});
 			if (!res.ok) {
 				const body = await res.text();
 				console.error("Personal checkout failed", res.status, body);
-				alert("Could not start checkout. Please refresh and try again.");
 				return;
 			}
 			const data = await res.json();
 			if (data?.url) {
 				// Trace event for analytics instrumentation hooks (optional listener)
 				globalThis?.dispatchEvent(
-					new CustomEvent("pricing:redirect_checkout", { detail: { plan: id, price: PERSONAL_PRICE_ID } })
+					new CustomEvent("pricing:redirect_checkout", { detail: { plan: id, price: body?.price_id || "default" } })
 				);
 				globalThis.location.href = data.url;
 			} else {
-				alert("Unexpected response from billing service.");
+				console.error("Unexpected checkout response payload", data);
 			}
 		} catch (error) {
 			console.error("Personal checkout error", error);
-			alert("Something went wrong starting checkout.");
 		} finally {
 			setBusy(false);
 		}
@@ -251,9 +248,7 @@ export function Plan({
 						} else {
 							setInternalSelected(true);
 						}
-						if (id === "personal") {
-							startPersonalCheckout();
-						}
+						if (id === "personal") startPersonalCheckout();
 					}}
 				>
 					{busy && id === "personal" ? <CircularProgress size={20} /> : id === "business" ? "Contact us" : "Select"}
