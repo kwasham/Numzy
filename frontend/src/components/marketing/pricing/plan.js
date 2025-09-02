@@ -49,6 +49,8 @@ export function Plan({
 		pro: process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY || "",
 	};
 
+	const PERSONAL_PRICE_MISSING = id === "personal" && !PRICE_IDS.personal;
+
 	async function startPersonalCheckout() {
 		try {
 			setBusy(true);
@@ -60,13 +62,14 @@ export function Plan({
 				/* ignore auth retrieval error */
 			}
 			const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-			// If no explicit personal price ID is configured, omit price_id so backend uses its default (likely Pro).
-			const body = PRICE_IDS.personal ? { price_id: PRICE_IDS.personal } : undefined;
+			// Require explicit personal price to avoid provisioning a different tier by accident.
 			if (!PRICE_IDS.personal) {
-				console.warn(
-					"Personal plan price env var missing (NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY). Falling back to backend default checkout."
+				console.error(
+					"Missing NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY; aborting personal checkout instead of defaulting to another plan."
 				);
+				return;
 			}
+			const body = { price_id: PRICE_IDS.personal };
 			const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/billing/checkout`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
@@ -82,7 +85,7 @@ export function Plan({
 			if (data?.url) {
 				// Trace event for analytics instrumentation hooks (optional listener)
 				globalThis?.dispatchEvent(
-					new CustomEvent("pricing:redirect_checkout", { detail: { plan: id, price: body?.price_id || "default" } })
+					new CustomEvent("pricing:redirect_checkout", { detail: { plan: id, price: body.price_id } })
 				);
 				globalThis.location.href = data.url;
 			} else {
@@ -251,7 +254,15 @@ export function Plan({
 						if (id === "personal") startPersonalCheckout();
 					}}
 				>
-					{busy && id === "personal" ? <CircularProgress size={20} /> : id === "business" ? "Contact us" : "Select"}
+					{PERSONAL_PRICE_MISSING && id === "personal" ? (
+						"Configure price ID"
+					) : busy && id === "personal" ? (
+						<CircularProgress size={20} />
+					) : id === "business" ? (
+						"Contact us"
+					) : (
+						"Select"
+					)}
 				</Button>
 			)}
 		</Card>
