@@ -1,8 +1,10 @@
 import * as React from "react";
+import { useAuth } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
@@ -39,6 +41,41 @@ export function Plan({
 	const [internalSelected, setInternalSelected] = React.useState(false);
 	const hasControlledSelected = typeof selected === "boolean";
 	const effectiveSelected = hasControlledSelected ? selected : internalSelected;
+	const [busy, setBusy] = React.useState(false);
+	const { getToken } = useAuth?.() || {};
+	const PERSONAL_PRICE_ID = process.env.NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY;
+
+	async function startPersonalCheckout() {
+		if (!PERSONAL_PRICE_ID) return; // silently skip if not configured
+		try {
+			setBusy(true);
+			let authHeader = {};
+			try {
+				const token = (await getToken?.()) || null;
+				if (token) authHeader = { Authorization: `Bearer ${token}` };
+			} catch {
+				/* ignore auth retrieval error */
+			}
+			const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+			const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/billing/checkout`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
+				body: JSON.stringify({ price_id: PERSONAL_PRICE_ID }),
+				credentials: "include",
+			});
+			if (res.ok) {
+				const data = await res.json();
+				if (data?.url) globalThis.location.href = data.url;
+			} else {
+				// non-fatal; selection still persists
+				console.error("Personal checkout failed", await res.text());
+			}
+		} catch (error) {
+			console.error("Personal checkout error", error);
+		} finally {
+			setBusy(false);
+		}
+	}
 	// Define base and recommended styles.  These leverage the MUI theme
 	// palette so colors automatically adjust between light/dark modes.
 	const baseStyles = {
@@ -178,7 +215,8 @@ export function Plan({
 					color="primary"
 					size="large"
 					fullWidth
-					onClick={() => {
+					disabled={busy}
+					onClick={async () => {
 						if (id === "business") {
 							globalThis?.dispatchEvent(new CustomEvent("pricing:contact", { detail: { plan: id } }));
 							globalThis.location.href = "mailto:sales@example.com?subject=Business%20Plan%20Inquiry";
@@ -192,9 +230,12 @@ export function Plan({
 						} else {
 							setInternalSelected(true);
 						}
+						if (id === "personal") {
+							startPersonalCheckout();
+						}
 					}}
 				>
-					{id === "business" ? "Contact us" : "Select"}
+					{busy && id === "personal" ? <CircularProgress size={20} /> : id === "business" ? "Contact us" : "Select"}
 				</Button>
 			)}
 		</Card>
