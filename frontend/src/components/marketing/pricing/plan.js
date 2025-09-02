@@ -43,10 +43,21 @@ export function Plan({
 	const effectiveSelected = hasControlledSelected ? selected : internalSelected;
 	const [busy, setBusy] = React.useState(false);
 	const { getToken } = useAuth?.() || {};
-	const PERSONAL_PRICE_ID = process.env.NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY;
+	// Resolve personal plan price ID with sensible fallbacks. If a dedicated personal
+	// price is not configured we fall back to the Pro monthly so the flow still
+	// works in dev/demo environments.
+	const PERSONAL_PRICE_ID =
+		process.env.NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY || process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY || "";
 
 	async function startPersonalCheckout() {
-		if (!PERSONAL_PRICE_ID) return; // silently skip if not configured
+		// Provide immediate feedback & log if misconfigured.
+		if (!PERSONAL_PRICE_ID) {
+			console.error(
+				"No Stripe price ID configured for personal plan (expected NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY or fallback)."
+			);
+			alert("Checkout temporarily unavailable. Please try again later.");
+			return;
+		}
 		try {
 			setBusy(true);
 			let authHeader = {};
@@ -63,15 +74,25 @@ export function Plan({
 				body: JSON.stringify({ price_id: PERSONAL_PRICE_ID }),
 				credentials: "include",
 			});
-			if (res.ok) {
-				const data = await res.json();
-				if (data?.url) globalThis.location.href = data.url;
+			if (!res.ok) {
+				const body = await res.text();
+				console.error("Personal checkout failed", res.status, body);
+				alert("Could not start checkout. Please refresh and try again.");
+				return;
+			}
+			const data = await res.json();
+			if (data?.url) {
+				// Trace event for analytics instrumentation hooks (optional listener)
+				globalThis?.dispatchEvent(
+					new CustomEvent("pricing:redirect_checkout", { detail: { plan: id, price: PERSONAL_PRICE_ID } })
+				);
+				globalThis.location.href = data.url;
 			} else {
-				// non-fatal; selection still persists
-				console.error("Personal checkout failed", await res.text());
+				alert("Unexpected response from billing service.");
 			}
 		} catch (error) {
 			console.error("Personal checkout error", error);
+			alert("Something went wrong starting checkout.");
 		} finally {
 			setBusy(false);
 		}
