@@ -84,32 +84,11 @@ export function Plan({
 				// width: { xs: 260, sm: 300, md: 320 },
 				// mx: { xs: 0.5, md: 1 },
 				// my: { xs: 0, md: 1 },
-				...(effectiveSelected && {
-					borderColor: "success.main",
-					boxShadow: 10,
-					backgroundImage: (theme) =>
-						`linear-gradient(135deg, ${theme.palette.success.dark}22, ${theme.palette.success.main}11)`,
-				}),
-				cursor: id === "business" ? "default" : "pointer",
+				// Removed selected highlight styling & pointer cursor per request.
 			}}
 			role="group"
 			tabIndex={0}
 			aria-label={`${name} plan${effectiveSelected ? " selected" : ""}`}
-			onClick={(e) => {
-				// Ignore clicks originating from the primary action button to avoid double handling
-				if (e.target.closest && e.target.closest("button")) return;
-				if (id === "business") return; // business triggers contact flow only via button
-				if (!effectiveSelected) {
-					if (onSelect) {
-						onSelect(id);
-					} else {
-						setInternalSelected(true);
-					}
-					globalThis?.dispatchEvent(
-						new CustomEvent("pricing:select", { detail: { plan: id, yearly: period === "/year" } })
-					);
-				}
-			}}
 			onKeyDown={(e) => {
 				if ((e.key === "Enter" || e.key === " ") && !effectiveSelected && id !== "business") {
 					e.preventDefault();
@@ -142,7 +121,7 @@ export function Plan({
 			{/* Badges */}
 			<Stack direction="row" spacing={1} sx={{ mb: 1 }}>
 				{recommended && <Chip label="Recommended" color="primary" size="small" />}
-				{effectiveSelected && <Chip label="Selected" color="success" size="small" />}
+				{/* Removed selected chip highlight per request */}
 			</Stack>
 			{/* Plan name and description */}
 			<Stack spacing={1} sx={{ mb: 2 }}>
@@ -195,11 +174,10 @@ export function Plan({
 			{/* Action button */}
 			{action ?? (
 				<Button
-					variant={id === "business" ? "outlined" : effectiveSelected ? "outlined" : "contained"}
-					color={effectiveSelected ? "success" : "primary"}
+					variant={id === "business" ? "outlined" : "contained"}
+					color="primary"
 					size="large"
 					fullWidth
-					disabled={id !== "business" && effectiveSelected}
 					onClick={() => {
 						if (id === "business") {
 							globalThis?.dispatchEvent(new CustomEvent("pricing:contact", { detail: { plan: id } }));
@@ -216,7 +194,7 @@ export function Plan({
 						}
 					}}
 				>
-					{id === "business" ? "Contact us" : effectiveSelected ? "Selected" : "Select"}
+					{id === "business" ? "Contact us" : "Select"}
 				</Button>
 			)}
 		</Card>
