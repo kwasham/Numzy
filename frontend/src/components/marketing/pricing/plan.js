@@ -87,11 +87,29 @@ export function Plan({
 				...(effectiveSelected && {
 					borderColor: "success.main",
 					boxShadow: 10,
+					backgroundImage: (theme) =>
+						`linear-gradient(135deg, ${theme.palette.success.dark}22, ${theme.palette.success.main}11)`,
 				}),
+				cursor: id === "business" ? "default" : "pointer",
 			}}
 			role="group"
 			tabIndex={0}
 			aria-label={`${name} plan${effectiveSelected ? " selected" : ""}`}
+			onClick={(e) => {
+				// Ignore clicks originating from the primary action button to avoid double handling
+				if (e.target.closest && e.target.closest("button")) return;
+				if (id === "business") return; // business triggers contact flow only via button
+				if (!effectiveSelected) {
+					if (onSelect) {
+						onSelect(id);
+					} else {
+						setInternalSelected(true);
+					}
+					globalThis?.dispatchEvent(
+						new CustomEvent("pricing:select", { detail: { plan: id, yearly: period === "/year" } })
+					);
+				}
+			}}
 			onKeyDown={(e) => {
 				if ((e.key === "Enter" || e.key === " ") && !effectiveSelected && id !== "business") {
 					e.preventDefault();
