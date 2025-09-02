@@ -741,7 +741,9 @@ def process_stripe_event(event: dict):
                     user.payment_state = "past_due" if status in ("unpaid",) else None
                 elif status in ("active", "trialing") and price_id:
                     new_plan = None
-                    if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                    if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                        new_plan = PlanType.PERSONAL
+                    elif price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
                         new_plan = PlanType.PRO
                     elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
                         new_plan = PlanType.BUSINESS
@@ -773,7 +775,9 @@ def process_stripe_event(event: dict):
                 changed = True
             if price_id:
                 plan = None
-                if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                    plan = PlanType.PERSONAL
+                elif price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
                     plan = PlanType.PRO
                 elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
                     plan = PlanType.BUSINESS

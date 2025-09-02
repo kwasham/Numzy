@@ -245,7 +245,10 @@ async def stripe_webhook(request: Request):
                                 user.payment_state = "past_due" if status in ("unpaid",) else None
                             elif status in ("active", "trialing") and price_id:
                                 new_plan: PlanType | None = None
-                                if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
+                                # Personal -> PRO/BUSINESS price mapping extended to include PERSONAL
+                                if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                                    new_plan = PlanType.PERSONAL
+                                elif price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
                                     new_plan = PlanType.PRO
                                 elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                                     new_plan = PlanType.BUSINESS
@@ -289,7 +292,9 @@ async def stripe_webhook(request: Request):
                         changed = True
                     if price_id:
                         plan: PlanType | None = None
-                        if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
+                        if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                            plan = PlanType.PERSONAL
+                        elif price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
                             plan = PlanType.PRO
                         elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                             plan = PlanType.BUSINESS
