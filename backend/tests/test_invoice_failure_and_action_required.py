@@ -26,10 +26,26 @@ class DummyUser:
         self.id = 2
         self.email = "fail@example.com"
         self.clerk_id = "clrk_fail"
-        try:
-            self.plan = PlanType(plan_value)
-        except Exception:
-            self.plan = PlanType.FREE
+        # Accept case-insensitive plan tokens; default to PRO if provided value invalid and FREE plan deprecated.
+        resolved = None
+        if isinstance(plan_value, str):
+            up = plan_value.upper()
+            for candidate in (up, up.capitalize()):
+                try:
+                    resolved = PlanType[candidate]
+                    break
+                except KeyError:
+                    try:
+                        resolved = PlanType(candidate)
+                        break
+                    except Exception:
+                        pass
+        if resolved is None:
+            try:
+                resolved = PlanType.PRO
+            except Exception:
+                resolved = PlanType.FREE  # final fallback
+        self.plan = resolved
         self.stripe_customer_id = customer_id
 
 @pytest.fixture(autouse=True)

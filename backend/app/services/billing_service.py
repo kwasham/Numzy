@@ -108,8 +108,27 @@ class BillingService:
         quota = self.get_monthly_quota(user.plan)
         if quota == float("inf"):
             return False
-        usage = await self.get_monthly_usage(db, user.id)
-        return usage >= quota
+        # Prefer cached counter on user row (slice 1) to avoid COUNT(*) each request.
+        try:
+            usage = getattr(user, "monthly_receipt_count", None)
+        except Exception:
+            usage = None
+        live_usage = None
+        # Fallback scenarios:
+        # 1. Counter is None (not backfilled) -> compute live.
+        # 2. Counter is 0 but there may be existing receipts (fresh migration) -> compute live once.
+        if usage is None or usage == 0:
+            live_usage = await self.get_monthly_usage(db, user.id)
+            if usage is None or live_usage > 0:
+                usage = live_usage
+                # Best-effort persist updated counter when different
+                try:
+                    if hasattr(user, "monthly_receipt_count") and getattr(user, "monthly_receipt_count") != usage:
+                        user.monthly_receipt_count = int(usage)  # type: ignore
+                        await db.commit()
+                except Exception:
+                    await db.rollback()
+        return (usage or 0) >= quota
 
     async def enforce_quota(self, db: AsyncSession, user: User):
         if await self.is_over_quota(db, user):

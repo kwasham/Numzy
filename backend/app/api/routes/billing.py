@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends, Body, Header
+from fastapi import APIRouter, HTTPException, Depends, Body, Header, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,42 +54,127 @@ async def create_checkout_session(
     if not chosen_price:
         raise HTTPException(status_code=400, detail="Missing price_id and no default configured")
 
-    # Ensure we have a customer for this user
+    # ------------------------------------------------------------------
+    # Guard: prevent creating a SECOND active/trialing subscription.
+    # If the user already has an active subscription we should route them
+    # through the plan change endpoint so downgrades are deferred and upgrades
+    # use in-place price swaps with proration per policy.
+    # Only allow checkout if the user is currently FREE (no active subs) OR
+    # there are no active/trialing subscriptions in Stripe.
+    # ------------------------------------------------------------------
+    try:  # best-effort; do not block if lookup fails unexpectedly
+        existing_customer_id = getattr(user, "stripe_customer_id", None)
+        if existing_customer_id:
+            subs = stripe.Subscription.list(  # type: ignore
+                customer=existing_customer_id,
+                status="all",
+                limit=10,
+            )
+            data = subs.get("data", []) if isinstance(subs, dict) else []
+            active_like = [s for s in data if (s.get("status") or "").lower() in ("active", "trialing")]
+            if active_like:
+                # Fetch the first item's price for highest active subscription to inform message (optional)
+                def _first_price_id(s):
+                    try:
+                        items = s.get("items", {}).get("data", [])
+                        if items:
+                            return items[0].get("price", {}).get("id")
+                    except Exception:
+                        return None
+                current_price_ids = list({p for p in (_first_price_id(s) for s in active_like) if p})
+                logger.info(
+                    "[billing] checkout blocked; user already has active subscription(s) prices=%s user_id=%s", current_price_ids, getattr(user, "id", None)
+                )
+                # Surface a 409 so client can redirect to settings/change flow
+                raise HTTPException(
+                    status_code=409,
+                    detail="Existing active subscription present; use plan change flow instead of new checkout",
+                )
+    except HTTPException:
+        raise
+    except Exception as guard_ex:  # pragma: no cover
+        logger.warning("[billing] checkout guard failed (continuing): %s", guard_ex)
+
+    # Ensure we have a valid Stripe customer for this user. If a stored ID was deleted in Stripe dashboard,
+    # recover by creating a fresh customer and updating the DB.
     customer_id = getattr(user, "stripe_customer_id", None)
-    if not customer_id:
+    def _create_customer() -> str:
         try:
             cust = stripe.Customer.create(email=user.email)  # type: ignore
-            customer_id = cust["id"]
-            user.stripe_customer_id = customer_id
-            await db.commit()
-        except Exception as e:  # pragma: no cover
-            logger.exception("Failed to create Stripe customer: %s", e)
+            return cust["id"]
+        except Exception as ce:  # pragma: no cover
+            logger.exception("Failed to create Stripe customer: %s", ce)
             raise HTTPException(status_code=500, detail="Unable to create customer")
+
+    # If we *have* an ID, verify it exists (best-effort). If retrieval fails with no-such-customer, recreate.
+    if customer_id:
+        try:  # lightweight existence check
+            stripe.Customer.retrieve(customer_id)  # type: ignore
+        except Exception as retrieve_ex:  # likely deleted
+            msg = str(retrieve_ex)
+            if "No such customer" in msg:
+                logger.warning("[billing] Stored stripe_customer_id %s invalid (deleted); recreating", customer_id)
+                customer_id = _create_customer()
+                user.stripe_customer_id = customer_id
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+            else:  # other retrieval issues are non-fatal; fall through
+                logger.info("[billing] customer retrieve non-fatal error: %s", msg)
+    else:
+        customer_id = _create_customer()
+        user.stripe_customer_id = customer_id
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
     success_url = f"{settings.FRONTEND_BASE_URL}/dashboard?checkout=success"
     cancel_url = f"{settings.FRONTEND_BASE_URL}/pricing?checkout=cancelled"
 
-    try:
-        # Build request options including optional idempotency key
-        request_opts = {}
-        if idempotency_key:
-            request_opts["idempotency_key"] = idempotency_key
-        # Optional automatic tax
-        automatic_tax = {"enabled": True} if getattr(settings, "STRIPE_AUTOMATIC_TAX_ENABLED", False) else None
-        session = stripe.checkout.Session.create(  # type: ignore
-            mode="subscription",
-            customer=customer_id,
-            line_items=[{"price": chosen_price, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            client_reference_id=getattr(user, "clerk_id", None),
-            allow_promotion_codes=True,
-            billing_address_collection="auto",
-            **({"automatic_tax": automatic_tax} if automatic_tax else {}),
-            **request_opts,
-        )
-    except Exception as e:  # pragma: no cover
-        logger.exception("Failed to create checkout session: %s", e)
+    # Attempt session creation; if we get a 'No such customer' error mid-flight (race), recreate once and retry.
+    attempt = 0
+    last_error: Exception | None = None
+    session = None
+    while attempt < 2:
+        try:
+            request_opts = {}
+            if idempotency_key:
+                # Use distinct idempotency key per attempt to avoid Stripe caching a failed request
+                request_opts["idempotency_key"] = f"{idempotency_key}-{attempt}" if attempt else idempotency_key
+            automatic_tax = {"enabled": True} if getattr(settings, "STRIPE_AUTOMATIC_TAX_ENABLED", False) else None
+            session = stripe.checkout.Session.create(  # type: ignore
+                mode="subscription",
+                customer=customer_id,
+                line_items=[{"price": chosen_price, "quantity": 1}],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                client_reference_id=getattr(user, "clerk_id", None),
+                allow_promotion_codes=True,
+                billing_address_collection="auto",
+                **({"automatic_tax": automatic_tax} if automatic_tax else {}),
+                **request_opts,
+            )
+            break  # success
+        except Exception as e:  # pragma: no cover
+            last_error = e
+            msg = str(e)
+            if attempt == 0 and "No such customer" in msg:
+                logger.warning("[billing] checkout failed due to stale customer id; recreating and retrying once")
+                # Recreate customer + persist
+                new_cust = _create_customer()
+                customer_id = new_cust
+                user.stripe_customer_id = customer_id
+                try:
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                attempt += 1
+                continue
+            logger.exception("Failed to create checkout session (attempt %d): %s", attempt + 1, e)
+            break
+    if session is None:
         raise HTTPException(status_code=500, detail="Unable to create checkout session")
 
     # Observability (non-PII)
@@ -798,12 +883,41 @@ async def get_billing_status(
             subs = stripe.Subscription.list(  # type: ignore
                 customer=customer_id,
                 status="all",
-                limit=1,
+                limit=5,
                 expand=["data.latest_invoice.payment_intent"],
             )
             subs_data = subs.get("data", []) if isinstance(subs, dict) else []
+            # Selection heuristic: prefer active/trialing; among those prefer one whose first item price matches a known env price, with PERSONAL first, then PRO, then BUSINESS; fallback to first.
+            def _price_of(s):
+                try:
+                    items = s.get("items", {}).get("data", [])
+                    if items:
+                        return items[0].get("price", {}).get("id")
+                except Exception:
+                    return None
+            known_priority = [
+                getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+                getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+                getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+                getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+                getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None),
+            ]
+            def _score(s):
+                status = (s.get("status") or "").lower()
+                price = _price_of(s)
+                base = 0
+                if status in ("active", "trialing"): base += 100
+                if price in known_priority:
+                    # Higher score for earlier index in priority list
+                    try:
+                        base += 50 - known_priority.index(price)
+                    except ValueError:
+                        pass
+                return base
+            sub = None
             if subs_data:
-                sub = subs_data[0]
+                subs_data_sorted = sorted(subs_data, key=_score, reverse=True)
+                sub = subs_data_sorted[0]
                 price_id = None
                 try:
                     items = sub.get("items", {}).get("data", [])
@@ -856,13 +970,14 @@ async def get_billing_status(
     # Normalize plan to string for the frontend
     plan_value = getattr(user, "plan", PlanType.FREE)
     if isinstance(plan_value, PlanType):
-        plan_value = plan_value.value
+        # Frontend expects lowercase plan identifiers ("free", "personal", ...)
+        # while the DB stores UPPERCASE enum tokens. Normalize here for response payloads.
+        plan_value = plan_value.value.lower()
 
-    # Build a catalog of plans with monthly (& yearly when available) prices.
+    # Build a catalog of the three active commercial plans with monthly (& yearly when available) prices.
+    # Free tier is intentionally omitted from catalog to reflect current product strategy.
     # Shape: { planId: { name, currency, monthly: { price, price_id }, yearly?: { price, price_id } } }
-    catalog = {
-        "free": {"name": "Free", "currency": "USD", "monthly": {"price": 0, "price_id": None}},
-    }
+    catalog: dict[str, dict] = {}
     try:
         def _resolve_price_by_lookup(lookup_key: str | None) -> dict | None:
             if not lookup_key:
@@ -948,8 +1063,8 @@ async def get_billing_status(
         if target_plan is not None and getattr(user, "plan", None) != target_plan:
             user.plan = target_plan
             await db.commit()
-            # Normalize for response
-            plan_value = target_plan.value
+            # Normalize for response (lowercase for clients)
+            plan_value = target_plan.value.lower()
     except Exception as _recon_ex:  # pragma: no cover
         logger.warning("Failed to reconcile user plan from subscription: %s", _recon_ex)
 
@@ -963,18 +1078,133 @@ async def get_billing_status(
     except Exception:
         pass
 
-    return JSONResponse(
-        {
-            "plan": plan_value,
-            "stripe_customer_id": customer_id,
-            "subscription": subscription_summary,
-            "payment_state": getattr(user, "payment_state", None) or payment_state or (subscription_summary.get("status") if subscription_summary else None),
-            "subscription_status": getattr(user, "subscription_status", None) or (subscription_summary.get("status") if subscription_summary else None),
-            "last_invoice_status": getattr(user, "last_invoice_status", None),
-            "action": action_meta,
-            "catalog": catalog,
-        }
-    )
+    # Build trial & usage sections (readable implementation replacing prior lambda tangle)
+    from app.services.trial_service import TrialService as _TS  # local import to avoid circulars at module import time
+    from app.services.billing_service import BillingService as _BS
+    trial_service = _TS()
+    billing_service = _BS()
+    trial_active = False
+    trial_ends_iso = None
+    trial_days_remaining = None
+    try:
+        trial_active = trial_service.is_trial_active(user)
+        ends_at = getattr(user, "trial_ends_at", None)
+        if ends_at:
+            trial_ends_iso = ends_at.isoformat().replace("+00:00", "Z")
+            if trial_active:
+                from datetime import datetime as _dt
+                trial_days_remaining = max(0, (ends_at - _dt.utcnow()).days)
+    except Exception:
+        pass
+    # Usage monthly reset timestamp (start of next month UTC)
+    usage_monthly_used = getattr(user, "monthly_receipt_count", None)
+    usage_limit = billing_service.get_monthly_quota(getattr(user, "plan", None))
+    from datetime import datetime as _dt
+    now_dt = _dt.utcnow()
+    if now_dt.month == 12:
+        next_month_start = _dt(now_dt.year + 1, 1, 1)
+    else:
+        next_month_start = _dt(now_dt.year, now_dt.month + 1, 1)
+    resets_at_iso = next_month_start.replace(tzinfo=None).isoformat() + "Z"
+    body = {
+        "plan": plan_value,
+        "stripe_customer_id": customer_id,
+        "subscription": subscription_summary,
+        "payment_state": getattr(user, "payment_state", None) or payment_state or (subscription_summary.get("status") if subscription_summary else None),
+        "subscription_status": getattr(user, "subscription_status", None) or (subscription_summary.get("status") if subscription_summary else None),
+        "last_invoice_status": getattr(user, "last_invoice_status", None),
+        "action": action_meta,
+        "catalog": catalog,
+        "trial": {
+            "active": trial_active,
+            "ends_at": trial_ends_iso,
+            "days_remaining": trial_days_remaining,
+        },
+        "usage": {
+            "monthly": {
+                "used": usage_monthly_used,
+                "limit": (usage_limit if usage_limit != float("inf") else None),
+                "resets_at": resets_at_iso,
+            }
+        },
+    }
+    return JSONResponse(body)
+
+
+@router.get("/debug/diagnostics")
+async def billing_diagnostics(
+    reconcile: bool = Query(False, description="If true, attempt a one-off reconciliation of user.plan from subscription price."),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_user),
+):
+    """Return internal billing diagnostic information for the authenticated user.
+
+    Includes:
+    - Current DB plan value
+    - Stripe subscription (first item) price/product IDs
+    - Environment-discovered price IDs (personal/pro/business)
+    - Mapping decision and whether a reconciliation was applied
+    """
+    if stripe is None or not settings.STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+
+    cust_id = getattr(user, "stripe_customer_id", None)
+    sub_price_id = None
+    subscription_id = None
+    subscription_status = None
+    try:
+        if cust_id:
+            subs = stripe.Subscription.list(customer=cust_id, status="all", limit=1)  # type: ignore
+            data = subs.get("data", []) if isinstance(subs, dict) else []
+            if data:
+                sub = data[0]
+                subscription_id = sub.get("id")
+                subscription_status = sub.get("status")
+                try:
+                    items = sub.get("items", {}).get("data", [])
+                    if items:
+                        sub_price_id = items[0].get("price", {}).get("id")
+                except Exception:
+                    pass
+    except Exception as e:  # pragma: no cover
+        logger.warning("[diag] subscription fetch failed: %s", e)
+
+    env_prices = {
+        "personal_monthly": getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None),
+        "pro_monthly": getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None),
+        "pro_yearly": getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None),
+        "business_monthly": getattr(settings, "STRIPE_PRICE_BUSINESS_MONTHLY", getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None)),
+        "team_monthly": getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None),
+    }
+
+    mapped_plan = None
+    if sub_price_id:
+        if sub_price_id == env_prices.get("personal_monthly"):
+            mapped_plan = PlanType.PERSONAL
+        elif sub_price_id in (env_prices.get("pro_monthly"), env_prices.get("pro_yearly")):
+            mapped_plan = PlanType.PRO
+        elif sub_price_id in (env_prices.get("business_monthly"), env_prices.get("team_monthly")):
+            mapped_plan = PlanType.BUSINESS
+
+    applied = False
+    if reconcile and mapped_plan and getattr(user, "plan", None) != mapped_plan:
+        try:
+            user.plan = mapped_plan
+            await db.commit()
+            applied = True
+        except Exception:
+            await db.rollback()
+
+    return {
+        "user_plan_db": (getattr(user, "plan", None).value.lower() if isinstance(getattr(user, "plan", None), PlanType) else getattr(user, "plan", None)),
+        "subscription_id": subscription_id,
+        "subscription_status": subscription_status,
+        "subscription_price_id": sub_price_id,
+        "env_prices": env_prices,
+        "mapped_plan": mapped_plan.value.lower() if mapped_plan else None,
+        "reconciliation_applied": applied,
+    }
 
 
 @router.get("/payment-intent")

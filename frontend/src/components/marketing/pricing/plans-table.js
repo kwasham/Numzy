@@ -1,15 +1,18 @@
 "use client";
 
 import * as React from "react";
+import { useAuth } from "@clerk/nextjs";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import Container from "@mui/material/Container";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 
-import { BillingButtons } from "@/components/billing/billing-buttons";
+import { createPortalSession, fetchBillingStatus } from "@/lib/billing-client";
 
 import { Plan } from "./plan";
 import { generatePlanFeatures, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta, RAW_PRICING } from "./pricing-config";
@@ -19,6 +22,30 @@ import { generatePlanFeatures, PLAN_METADATA, PLAN_ORDER, planPrice, priceMeta, 
 const sentry = (typeof globalThis !== "undefined" && (globalThis.Sentry || globalThis.__SENTRY__)) || null;
 
 export function PlansTable() {
+	const { getToken } = useAuth();
+	const [billingLoading, setBillingLoading] = React.useState(true);
+	const [billingStatus, setBillingStatus] = React.useState(null);
+	const [portalLoading, setPortalLoading] = React.useState(false);
+	React.useEffect(() => {
+		(async () => {
+			setBillingLoading(true);
+			const st = await fetchBillingStatus(getToken);
+			setBillingStatus(st);
+			setBillingLoading(false);
+		})();
+	}, [getToken]);
+	const currentPlan = billingStatus?.plan;
+	const subscriptionState = (billingStatus?.subscription_status || "").toLowerCase();
+	const hasActiveSub = subscriptionState === "active" || subscriptionState === "trialing";
+	async function openPortal() {
+		try {
+			setPortalLoading(true);
+			const url = await createPortalSession(getToken);
+			if (url) globalThis.location.href = url;
+		} finally {
+			setPortalLoading(false);
+		}
+	}
 	// Determine if any paid plan exposes a discount to enable yearly toggle
 	const discountEligible = React.useMemo(
 		() =>
@@ -175,7 +202,27 @@ export function PlansTable() {
 								const { name, description, recommended } = PLAN_METADATA[id];
 								const featureEntries = featureDeltaMap[id];
 								// Provide a real checkout action for Pro; keep defaults for others to minimize risk.
-								const action = id === "pro" ? <BillingButtons size="large" /> : undefined;
+								let action;
+								if (id === currentPlan && hasActiveSub) {
+									action = (
+										<Stack direction="column" spacing={1} sx={{ mt: 1 }}>
+											<Button disabled variant="outlined" size="large" fullWidth>
+												Current plan
+											</Button>
+											<Button variant="text" size="small" disabled={portalLoading} onClick={openPortal}>
+												{portalLoading ? <CircularProgress size={14} /> : "Manage billing"}
+											</Button>
+										</Stack>
+									);
+								}
+								// For paid plan upgrade path – rely on Plan internal checkout; only show placeholder loading while status fetching.
+								if (!action && billingLoading) {
+									action = (
+										<Button variant="contained" size="large" disabled fullWidth>
+											<CircularProgress size={20} />
+										</Button>
+									);
+								}
 								return (
 									<Grid size={{ xs: 12, sm: 6, md: 3 }} key={id} data-pricing-card="true" data-plan={id}>
 										<Plan

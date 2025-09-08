@@ -21,18 +21,12 @@ import { PencilSimpleIcon } from "@phosphor-icons/react/dist/ssr/PencilSimple";
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
 
-import { availablePlans, PLAN_CAPABILITIES, PlanId } from "../../../../../shared/types/plan";
+import { availablePlans, PLAN_CAPABILITIES, PlanId } from "../../../../../shared/types/plan"; // availablePlans retained for preview logic but display list rebuilt from catalog
 import { PlanCard } from "./plan-card";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-// Local fallback prices used only if backend catalog lacks entries (development safety)
-const FALLBACK_PRICES = {
-	[PlanId.FREE]: 0,
-	[PlanId.PERSONAL]: 9.99,
-	[PlanId.PRO]: 29,
-	[PlanId.BUSINESS]: 99,
-};
+// Removed fallback prices from display: we now render only what the backend catalog provides to avoid stale/confusing numbers.
 
 function mapPlanToCardId(planName) {
 	// Normalize backend enum (FREE, PERSONAL, PRO, BUSINESS, ENTERPRISE) to UI IDs
@@ -176,11 +170,19 @@ export function Plans() {
 		return availablePlans(cat, true).some((pid) => !!cat?.[pid]?.yearly?.price);
 	}, [state.catalog]);
 
+	// Derive visible plans directly from backend catalog (ordered). If you need to include hidden tiers, adjust ORDER below.
+	// Static order (stable reference; not a hook dependency)
+	const ORDER = React.useRef([PlanId.FREE, PlanId.PERSONAL, PlanId.PRO, PlanId.BUSINESS]);
+	const visiblePlanIds = React.useMemo(() => {
+		const catalog = state.catalog || {};
+		return ORDER.current.filter((pid) => !!catalog[pid]);
+	}, [state.catalog]);
+
 	const resolveDisplayPrice = (planId) => {
 		const entry = state.catalog?.[planId];
-		if (!entry) return FALLBACK_PRICES[planId];
+		if (!entry) return 0; // unreachable since we filter; safeguard only
 		if (state.yearly && entry.yearly?.price) return entry.yearly.price / 12;
-		return entry.monthly?.price ?? entry.price ?? FALLBACK_PRICES[planId];
+		return entry.monthly?.price ?? entry.price ?? 0;
 	};
 
 	const actionDisabled = !state.selected || state.selected === state.currentPlanId || state.upgrading;
@@ -230,13 +232,18 @@ export function Plans() {
 					)}
 					<Stack spacing={3}>
 						<Grid container spacing={3}>
-							{availablePlans(state.catalog || {}, true).map((planId) => {
+							{visiblePlanIds.length === 0 && (
+								<Grid size={{ xs: 12 }}>
+									<Typography variant="body2" color="text.secondary">
+										No plans configured. Configure Stripe prices then refresh.
+									</Typography>
+								</Grid>
+							)}
+							{visiblePlanIds.map((planId) => {
 								const base = PLAN_CAPABILITIES[planId];
 								const override = state.catalog?.[planId] || {};
 								const currency = override?.currency || "USD";
 								const price = resolveDisplayPrice(planId);
-								// Hide non-free plans if no price present in catalog (missing configuration)
-								if (planId !== PlanId.FREE && !override?.monthly?.price && !override?.price) return null;
 								const plan = { id: planId, name: base.name, currency, price };
 								return (
 									<Grid key={planId} size={{ md: 3, xs: 12 }}>

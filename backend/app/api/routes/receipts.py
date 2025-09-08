@@ -43,6 +43,7 @@ import json
 import httpx
 from app.core.security import decode_clerk_jwt, CLERK_SECRET_KEY, CLERK_API_URL
 from app.models.enums import PlanType
+from app.services.trial_service import TrialService
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -132,41 +133,38 @@ async def upload_receipt(
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
     await enforce_tiered_rate_limit(user, "upload", cost=1)
-    # Monthly quota enforcement (simple count of receipts created this calendar month)
+    # Trial & monthly usage tracking slice 1
     try:
-        billing = BillingService()
-        plan = getattr(user, "plan", None)
-        from app.models.enums import PlanType as _PT
-        if plan is None:
-            plan = _PT.FREE
-        # Determine month boundaries (UTC)
-        now = datetime.utcnow()
-        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        # Next month start for exclusive end
-        if now.month == 12:
-            next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
-        else:
-            next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
-        q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
-        result = await db.execute(q)
-        count = result.scalar() or 0
-        limit = billing.get_monthly_quota(plan)
-        if limit != float("inf") and count >= limit:
+        ts = TrialService()
+        changed = ts.ensure_trial(user)
+        ts.maybe_reset_monthly_counter(user)
+        # increment after successful commit of receipt (later) but pre-check quota uses existing BillingService logic
+        if changed:
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+    except Exception:
+        pass
+    # Monthly quota enforcement using in-row counter fallback to service logic
+    billing = BillingService()
+    try:
+        if await billing.is_over_quota(db, user):
+            limit = billing.get_monthly_quota(user.plan)
             try:
                 sentry_breadcrumb(
                     category="quota",
                     message="upload_receipt.quota_denied",
                     data={
-                        "plan": getattr(plan, "value", str(plan)),
+                        "plan": getattr(user.plan, "value", str(user.plan)),
                         "monthly_limit": limit,
-                        "current_count": count,
+                        "current_count": getattr(user, "monthly_receipt_count", None),
                         "route": "POST /receipts",
                     },
                     level="info",
                 )
                 sentry_set_tags({
                     "quota.exceeded": True,
-                    "quota.plan": getattr(plan, "value", str(plan)),
+                    "quota.plan": getattr(user.plan, "value", str(user.plan)),
                 })
             except Exception:
                 pass
@@ -174,7 +172,6 @@ async def upload_receipt(
     except HTTPException:
         raise
     except Exception:
-        # Fail open (never block processing) on internal errors
         pass
     # Check file type
     if not file.content_type or not (file.content_type.startswith("image/") or file.content_type == "application/pdf"):
@@ -205,6 +202,13 @@ async def upload_receipt(
     db.add(receipt)
     await db.commit()
     await db.refresh(receipt)
+    # Increment usage counter (best-effort) after receipt creation
+    try:
+        ts.increment_usage(user)
+        db.add(user)
+        await db.commit()
+    except Exception:
+        pass
     
     # Queue background task for processing with user_id
     task_message = extract_and_audit_receipt.send(receipt.id, user.id)
@@ -248,30 +252,20 @@ async def upload_receipts_batch(
     storage = StorageService()
     created: List[ReceiptRead] = []
 
+    ts = TrialService()
     for f in files:
         # Quota check per file (stop early if exceeded)
         try:
             billing = BillingService()
-            plan = getattr(user, "plan", None)
-            from app.models.enums import PlanType as _PT
-            if plan is None:
-                plan = _PT.FREE
-            now = datetime.utcnow()
-            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-            if now.month == 12:
-                next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
-            else:
-                next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
-            q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
-            current_count = (await db.execute(q)).scalar() or 0
-            limit = billing.get_monthly_quota(plan)
-            if limit != float("inf") and current_count >= limit:
+            if await billing.is_over_quota(db, user):
+                limit = billing.get_monthly_quota(user.plan)
+                current_count = getattr(user, "monthly_receipt_count", None)
                 try:
                     sentry_breadcrumb(
                         category="quota",
                         message="upload_receipts_batch.quota_denied",
                         data={
-                            "plan": getattr(plan, "value", str(plan)),
+                            "plan": getattr(user.plan, "value", str(user.plan)),
                             "monthly_limit": limit,
                             "current_count": current_count,
                             "route": "POST /receipts/batch",
@@ -280,7 +274,7 @@ async def upload_receipts_batch(
                     )
                     sentry_set_tags({
                         "quota.exceeded": True,
-                        "quota.plan": getattr(plan, "value", str(plan)),
+                        "quota.plan": getattr(user.plan, "value", str(user.plan)),
                     })
                 except Exception:
                     pass
@@ -320,6 +314,13 @@ async def upload_receipts_batch(
         await db.commit()
         await db.refresh(receipt)
 
+        # Increment counter for each file (post-create)
+        try:
+            ts.increment_usage(user)
+            db.add(user)
+            await db.commit()
+        except Exception:
+            pass
         created.append(ReceiptRead.from_orm(receipt))
 
     return created

@@ -51,7 +51,7 @@ export function Plan({
 
 	const PERSONAL_PRICE_MISSING = id === "personal" && !PRICE_IDS.personal;
 
-	async function startPersonalCheckout() {
+	async function startCheckout() {
 		try {
 			setBusy(true);
 			let authHeader = {};
@@ -63,22 +63,207 @@ export function Plan({
 			}
 			const idempotency = globalThis?.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 			// Require explicit personal price to avoid provisioning a different tier by accident.
-			if (!PRICE_IDS.personal) {
-				console.error(
-					"Missing NEXT_PUBLIC_STRIPE_PRICE_PERSONAL_MONTHLY; aborting personal checkout instead of defaulting to another plan."
-				);
+			const priceId = PRICE_IDS[id];
+			if (!priceId) {
+				console.error("Missing Stripe price id env var for plan", { plan: id });
 				return;
 			}
-			const body = { price_id: PRICE_IDS.personal };
-			const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/billing/checkout`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
-				body: JSON.stringify(body || {}),
-				credentials: "include",
-			});
+			const body = { price_id: priceId };
+			// Resolve API base once; surface diagnostic warnings for common failure cases that cause a generic
+			// "TypeError: Failed to fetch" (CORS mismatch, mixed content, bad URL).
+			const rawApiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+			let apiBase = rawApiBase.replace(/\/$/, "");
+			try {
+				if (typeof globalThis !== "undefined" && globalThis.location) {
+					const pageProto = globalThis.location.protocol;
+					if (pageProto === "https:" && apiBase.startsWith("http://")) {
+						console.warn(
+							"[pricing] Potential mixed-content call (page over https, API over http). Browser will block request. Configure NEXT_PUBLIC_API_URL to use https or add a Next.js rewrite/proxy.",
+							{ apiBase, pageOrigin: globalThis.location.origin }
+						);
+					}
+				}
+			} catch {
+				/* noop diagnostics */
+			}
+			// NOTE: credentials intentionally omitted. Authorization header covers auth; cookies would force
+			// non-wildcard CORS and break local dev when allow_origins is '*'.
+			let res;
+			let finalBaseCandidate = null; // hoisted so accessible for error diagnostics after inner try
+			try {
+				// Pre-flight health probe (non-blocking failure) to differentiate connectivity vs endpoint issues
+				let healthOk = false;
+				try {
+					const healthResp = await fetch(`${apiBase}/health`, { method: "GET", mode: "cors" });
+					healthOk = healthResp.ok;
+				} catch (error) {
+					console.warn("[pricing] /health probe failed (continuing to checkout)", error?.message || error);
+				}
+				const page =
+					typeof location === "undefined"
+						? {}
+						: {
+								href: location.href,
+								origin: location.origin,
+								protocol: location.protocol,
+								hostname: location.hostname,
+							};
+				const diagBase = {
+					apiBase,
+					priceId: body.price_id,
+					hasAuth: Boolean(authHeader.Authorization),
+					idempotency,
+					healthOk,
+					page,
+					userAgent: typeof navigator === "undefined" ? undefined : navigator.userAgent,
+				};
+				// Build candidate API bases with intelligent fallbacks:
+				// 1. Provided / env base
+				// 2. If it ends with /api trim it
+				// 3. If refers to localhost and page is not localhost try host.docker.internal (common container mismatch)
+				// 4. Relative path (handled later only on network failure but we include for full telemetry)
+				const candidateBases = [];
+				const seenBases = new Set();
+				function pushBase(b) {
+					if (b && !seenBases.has(b)) {
+						seenBases.add(b);
+						candidateBases.push(b);
+					}
+				}
+				pushBase(apiBase);
+				if (/\/api$/i.test(apiBase)) pushBase(apiBase.replace(/\/api$/i, ""));
+				if (
+					/localhost/i.test(apiBase) &&
+					typeof location !== "undefined" &&
+					!/localhost|127\.0\.0\.1/.test(location.hostname)
+				) {
+					pushBase(apiBase.replace(/localhost/i, "host.docker.internal"));
+				}
+				// Attempt each candidate until a non-network error or success.
+				let lastError = null;
+				let last404 = null;
+				for (const baseCandidate of candidateBases) {
+					console.debug("[pricing] attempting checkout", { ...diagBase, baseCandidate });
+					try {
+						res = await fetch(`${baseCandidate}/billing/checkout`, {
+							method: "POST",
+							headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
+							body: JSON.stringify(body),
+							credentials: "omit",
+							mode: "cors",
+						});
+						finalBaseCandidate = baseCandidate;
+						if (res.status === 404 && baseCandidate !== candidateBases.at(-1)) {
+							last404 = baseCandidate;
+							continue; // try next candidate
+						}
+						break; // success or last candidate
+					} catch (error) {
+						lastError = error;
+						console.warn("[pricing] network error for candidate", { baseCandidate, error: error?.message });
+						continue; // try next
+					}
+				}
+				if (!res && lastError) {
+					// Final fallback: relative path (reverse proxy scenario)
+					try {
+						console.warn("[pricing] attempting relative path fallback /billing/checkout after all candidates failed");
+						res = await fetch(`/billing/checkout`, {
+							method: "POST",
+							headers: { "Content-Type": "application/json", "Idempotency-Key": idempotency, ...authHeader },
+							body: JSON.stringify(body),
+							credentials: "omit",
+							mode: "cors",
+						});
+					} catch (error) {
+						console.error("[pricing] Relative path fallback also failed", { relErr: error?.message });
+						throw lastError; // propagate first network error
+					}
+				}
+				if (last404) {
+					console.warn("[pricing] stripped trailing /api from API base after 404", {
+						originalBase: last404,
+						finalBase: candidateBases.at(-1),
+					});
+				}
+				if (!res) {
+					throw new Error("No response object after attempting all candidates");
+				}
+			} catch (error) {
+				const diag = {
+					apiBase,
+					priceId: body.price_id,
+					hasAuth: Boolean(authHeader.Authorization),
+					idempotency,
+					errorName: error?.name,
+					errorMsg: error?.message,
+					location:
+						typeof location === "undefined"
+							? undefined
+							: { origin: location.origin, protocol: location.protocol, hostname: location.hostname },
+				};
+				console.error("[pricing] Network-level fetch failure (before response). Diagnostics:", diag);
+				return; // abort early; no further handling since res absent
+			}
+			if (!res) return; // safety
 			if (!res.ok) {
-				const body = await res.text();
-				console.error("Personal checkout failed", res.status, body);
+				let rawBody;
+				try {
+					rawBody = await res.text();
+				} catch {
+					rawBody = "<unreadable>";
+				}
+				let parsed;
+				try {
+					parsed = JSON.parse(rawBody);
+				} catch {
+					parsed = null;
+				}
+				const errDiag = {
+					status: res.status,
+					finalBaseCandidate,
+					apiBase,
+					priceId: body.price_id,
+					hasAuth: Boolean(authHeader.Authorization),
+					responseBody: rawBody,
+					parsed,
+				};
+				if (res.status === 401) {
+					console.error("Checkout failed (unauthenticated)", errDiag);
+					// Optional: surface UI hint (simple alert for now; could integrate snackbar)
+					if (globalThis.window !== undefined) alert("Please sign in before starting checkout.");
+					return;
+				}
+				if (res.status === 409) {
+					console.error("Checkout blocked: active subscription exists", errDiag);
+					if (globalThis.window !== undefined) {
+						// Best-effort: fetch current billing status to enrich diagnostics (ignore failures)
+						(async () => {
+							try {
+								const statusResp = await fetch(`${apiBase}/billing/status`, {
+									method: "GET",
+									headers: { "Content-Type": "application/json", ...authHeader },
+									credentials: "omit",
+									mode: "cors",
+								});
+								if (statusResp.ok) {
+									const statusJson = await statusResp.json();
+									console.info("[pricing] current billing status after 409", statusJson);
+								}
+							} catch (error) {
+								console.warn("[pricing] failed to fetch billing status after 409", error?.message || error);
+							}
+						})();
+						alert("You already have an active subscription. Redirecting you to the dashboard.");
+						try {
+							globalThis.location.href = "/dashboard?already_subscribed=1";
+						} catch {
+							/* noop redirect failure */
+						}
+					}
+					return;
+				}
+				console.error("Checkout failed", errDiag);
 				return;
 			}
 			const data = await res.json();
@@ -92,7 +277,7 @@ export function Plan({
 				console.error("Unexpected checkout response payload", data);
 			}
 		} catch (error) {
-			console.error("Personal checkout error", error);
+			console.error("Checkout error", error);
 		} finally {
 			setBusy(false);
 		}
@@ -251,12 +436,12 @@ export function Plan({
 						} else {
 							setInternalSelected(true);
 						}
-						if (id === "personal") startPersonalCheckout();
+						if (id === "personal" || id === "pro") startCheckout();
 					}}
 				>
 					{PERSONAL_PRICE_MISSING && id === "personal" ? (
 						"Configure price ID"
-					) : busy && id === "personal" ? (
+					) : busy && (id === "personal" || id === "pro") ? (
 						<CircularProgress size={20} />
 					) : id === "business" ? (
 						"Contact us"

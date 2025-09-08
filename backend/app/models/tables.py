@@ -61,6 +61,12 @@ class User(Base):
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
 
+    # Trial & usage tracking (Personal plan slice 1)
+    trial_started_at = Column(DateTime, nullable=True)
+    trial_ends_at = Column(DateTime, nullable=True)
+    monthly_receipt_count = Column(Integer, nullable=True, default=0)
+    last_receipt_reset_at = Column(DateTime, nullable=True)
+
     # Relationships
     receipts = relationship("Receipt", back_populates="owner")
     audit_rules = relationship("AuditRule", back_populates="owner")

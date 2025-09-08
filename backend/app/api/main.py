@@ -112,13 +112,23 @@ if "*" not in allow_origins:
 seen = set()
 allow_origins = [o for o in allow_origins if not (o in seen or seen.add(o))]
 
+# If wildcard '*' is present we must NOT set allow_credentials=True, otherwise the middleware
+# cannot emit a valid Access-Control-Allow-Origin header and the browser will block with
+# "No 'Access-Control-Allow-Origin' header" even for simple requests that include Authorization.
+allow_credentials = True
+if any(o == "*" for o in allow_origins):
+    allow_credentials = False  # avoid invalid wildcard+credentials combination
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if os.environ.get("LOG_CORS_CONFIG", "0") == "1":  # optional debug
+    logger.info("[cors] origins=%s allow_credentials=%s", allow_origins, allow_credentials)
 
 # Register custom exception handlers
 app.add_exception_handler(RequestValidationError, validation_exception_handler)

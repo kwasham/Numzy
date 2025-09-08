@@ -16,6 +16,7 @@ import { appConfig } from "@/config/app";
 import { dayjs } from "@/lib/dayjs";
 import { DunningEntrypoint } from "@/components/billing/dunning-entrypoint";
 import { PlanBadge } from "@/components/billing/plan-badge";
+import { TrialBanner } from "@/components/billing/trial-banner";
 import { AppChat } from "@/components/dashboard/overview/app-chat";
 import { AppLimits } from "@/components/dashboard/overview/app-limits";
 import { AppUsage } from "@/components/dashboard/overview/app-usage";
@@ -38,6 +39,7 @@ export default function Page() {
 			}}
 		>
 			<Stack spacing={4}>
+				<TrialBanner />
 				<DunningEntrypoint />
 				<CheckoutReturnNotifier />
 				<Stack direction={{ xs: "column", sm: "row" }} spacing={3} sx={{ alignItems: "center" }}>
