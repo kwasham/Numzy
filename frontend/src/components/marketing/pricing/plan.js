@@ -10,8 +10,9 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { CheckIcon } from "@phosphor-icons/react/dist/ssr/Check";
+// Use shared feature details map for consistent tooltips across apps
+import { FEATURE_DETAILS } from "@shared/pricing/featureDetails";
 
-import { FEATURE_DETAILS } from "./pricing-config";
 import { ACCENT_COLOR_MAP } from "./pricing-theme";
 
 /**

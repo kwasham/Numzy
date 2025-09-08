@@ -12,6 +12,7 @@ import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import { FEATURE_DETAILS } from "@shared/pricing/featureDetails";
 
 import {
 	generatePlanFeatures,
@@ -198,11 +199,14 @@ export function TestBillingPricing() {
 									</Stack>
 									<Divider />
 									<Stack spacing={1} sx={{ flexGrow: 1 }}>
-										{p.features.slice(0, 6).map((f) => (
-											<Tooltip key={f} title={f} placement="right" arrow>
-												<Typography variant="body2">• {f}</Typography>
-											</Tooltip>
-										))}
+										{p.features.slice(0, 6).map((f) => {
+											const clean = f.replace(/ \*$/, "");
+											return (
+												<Tooltip key={f} title={FEATURE_DETAILS?.[clean] || ""} placement="right" arrow>
+													<Typography variant="body2">• {f}</Typography>
+												</Tooltip>
+											);
+										})}
 										{p.features.length > 6 && (
 											<Typography variant="caption" color="text.secondary">
 												+ {p.features.length - 6} more

@@ -22,10 +22,12 @@ import { CheckCircleIcon } from "@phosphor-icons/react/dist/ssr/CheckCircle";
 // import { MagnifyingGlassPlus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassPlus";
 import { PencilSimpleIcon } from "@phosphor-icons/react/dist/ssr/PencilSimple";
 import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
+import { userHasFeature } from "@shared/pricing/featureGate";
 
 import { paths } from "@/paths";
 import { dayjs } from "@/lib/dayjs";
 import { parseAmount } from "@/lib/parse-amount";
+import { useBillingStatus } from "@/hooks/use-billing-status";
 import { useReceiptDetails } from "@/hooks/use-receipt-details";
 import { PropertyItem } from "@/components/core/property-item";
 import { PropertyList } from "@/components/core/property-list";
@@ -48,6 +50,7 @@ function safeNum(v, def = 0) {
 export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previewSrc: prefetchedPreview }) {
 	const router = useRouter();
 	const { getToken } = useAuth();
+	const { status: billingStatus } = useBillingStatus();
 
 	// Centralized receipt + preview data via custom hook
 	const {
@@ -390,8 +393,8 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 										key: "Audit",
 										value: needsAudit ? (
 											<Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-												{auditMathError && (
-													<Tooltip title="Math mismatch detected between components and total">
+												{auditMathError && userHasFeature({ planId: billingStatus?.plan }, "Audit decision engine") && (
+													<Tooltip title="Audit decision engine indicates a math inconsistency between components and total">
 														<Chip color="error" size="small" label="Math Error" />
 													</Tooltip>
 												)}
@@ -411,54 +414,51 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 							</PropertyList>
 						</Card>
 
-            {/* Inline receipt display */}
-				<Card sx={{ borderRadius: 1 }} variant="outlined">
-					<Box sx={{ p: 2 }}>
-						<Box
-							sx={{
-								position: "relative",
-								width: "100%",
-								height: 520,
-								border: "1px solid",
-								borderColor: "divider",
-								borderRadius: 1,
-								overflow: "hidden",
-								bgcolor: "background.default",
-							}}
-						>
-							{downloadHref ? (
-								imageError ? (
-									<iframe src={downloadHref} title="Receipt" style={{ width: "100%", height: "100%", border: 0 }} />
-								) : (
-									<Box
-										component="img"
-										src={downloadHref}
-										alt="Receipt"
-										onError={() => setImageError(true)}
-										sx={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
-									/>
-								)
-							) : (
+						{/* Inline receipt display */}
+						<Card sx={{ borderRadius: 1 }} variant="outlined">
+							<Box sx={{ p: 2 }}>
 								<Box
 									sx={{
-										position: "absolute",
-										inset: 0,
-										display: "flex",
-										alignItems: "center",
-										justifyContent: "center",
+										position: "relative",
+										width: "100%",
+										height: 520,
+										border: "1px solid",
+										borderColor: "divider",
+										borderRadius: 1,
+										overflow: "hidden",
+										bgcolor: "background.default",
 									}}
 								>
-									<Typography variant="body2" color="text.secondary">
-										Preparing receipt…
-									</Typography>
+									{downloadHref ? (
+										imageError ? (
+											<iframe src={downloadHref} title="Receipt" style={{ width: "100%", height: "100%", border: 0 }} />
+										) : (
+											<Box
+												component="img"
+												src={downloadHref}
+												alt="Receipt"
+												onError={() => setImageError(true)}
+												sx={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
+											/>
+										)
+									) : (
+										<Box
+											sx={{
+												position: "absolute",
+												inset: 0,
+												display: "flex",
+												alignItems: "center",
+												justifyContent: "center",
+											}}
+										>
+											<Typography variant="body2" color="text.secondary">
+												Preparing receipt…
+											</Typography>
+										</Box>
+									)}
 								</Box>
-							)}
-						</Box>
-					</Box>
-				</Card>
-
-
-
+							</Box>
+						</Card>
 					</Stack>
 					<Stack spacing={3}>
 						<Typography variant="h6">Line items</Typography>
@@ -517,11 +517,12 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 											<Typography variant="subtitle1">
 												{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total)}
 											</Typography>
-											{(mathMismatch || auditMathError) && (
-												<Tooltip title="The sum of components does not match total (see math)">
-													<Chip color="error" size="small" label="Mismatch" />
-												</Tooltip>
-											)}
+											{(mathMismatch || auditMathError) &&
+												userHasFeature({ planId: billingStatus?.plan }, "Audit decision engine") && (
+													<Tooltip title="Audit decision engine indicates a math inconsistency between components and total">
+														<Chip color="error" size="small" label="Mismatch" />
+													</Tooltip>
+												)}
 										</Stack>
 									</Stack>
 									{displayedReceipt?.status === "failed" && (
@@ -555,7 +556,6 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 						</Card>
 					</Stack>
 				</Stack>
-
 			</DialogContent>
 		</Dialog>
 	);
