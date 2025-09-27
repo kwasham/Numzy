@@ -37,7 +37,10 @@ export const paths = {
 			updatePassword: "/auth/supabase/update-password",
 		},
 		samples: {
-			signIn: { centered: "/auth/samples/sign-in/centered", split: "/auth/samples/sign-in/split" },
+			signIn: {
+				centered: "/auth/samples/sign-in/centered",
+				split: "/auth/samples/sign-in/split",
+			},
 			signUp: { centered: "/auth/samples/sign-up/centered", split: "/auth/samples/sign-up/split" },
 			updatePassword: {
 				centered: "/auth/samples/update-password/centered",

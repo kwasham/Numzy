@@ -1,9 +1,6 @@
 import * as React from "react";
 import GlobalStyles from "@mui/material/GlobalStyles";
 
-import { Footer } from "@/components/marketing/layout/footer";
-import { MainNav } from "@/components/marketing/layout/main-nav";
-
 export default function Layout({ children }) {
 	return (
 		<React.Fragment>
@@ -20,9 +17,9 @@ export default function Layout({ children }) {
 				}}
 			/>
 			<div>
-				<MainNav />
+				{/* <MainNav /> */}
 				<main>{children}</main>
-				<Footer />
+				{/* <Footer /> */}
 			</div>
 		</React.Fragment>
 	);
