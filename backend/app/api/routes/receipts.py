@@ -43,6 +43,7 @@ import json
 import httpx
 from app.core.security import decode_clerk_jwt, CLERK_SECRET_KEY, CLERK_API_URL
 from app.models.enums import PlanType
+from app.services.trial_service import TrialService
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -55,51 +56,37 @@ async def user_with_optional_token(
     db: AsyncSession = Depends(get_db_session),
     token: str | None = Query(None),
 ):
-    """Dependency that authenticates via Authorization header or `?token=` query.
+    """Authenticate via Authorization header or `?token=` query using Clerk JWT.
 
-    We cannot invoke FastAPI dependency functions (`get_user`) directly because
-    that bypasses their internal dependency resolution, returning `Depends`
-    objects. Instead we inline minimal logic: if an Authorization header is
-    present we treat its Bearer token exactly the same as a query token.
+    - Requires a valid Bearer token (or `?token=`).
+    - Decodes JWT via Clerk JWKS.
+    - Resolves existing local user by `clerk_id`, or fetches from Clerk API and creates/backfills.
+    - No development bypass or synthetic users.
     """
-    # Dev bypass: fabricate / fetch dev user
-    if settings.DEV_AUTH_BYPASS:
-        result = await db.execute(select(User).where(User.email == "dev@example.com"))
-        user = result.scalar_one_or_none()
-        if user is None:
-            user = User(
-                clerk_id="dev_clerk_id_12345",
-                email="dev@example.com",
-                name="Dev User",
-                plan=PlanType.FREE,
-            )
-            db.add(user)
-            await db.commit()
-            await db.refresh(user)
-        return user
-
+    # Extract token from header or query param
     auth_header = request.headers.get("Authorization")
-    bearer_token = None
-    if auth_header and auth_header.startswith("Bearer "):
-        bearer_token = auth_header.split(" ", 1)[1]
+    bearer_token = auth_header.split(" ", 1)[1] if auth_header and auth_header.startswith("Bearer ") else None
     jwt_token = bearer_token or token
     if not jwt_token:
         raise HTTPException(status_code=401, detail="Missing auth token")
 
+    # Verify token and extract Clerk user id
     payload = decode_clerk_jwt(jwt_token)
     clerk_user_id = payload.get("sub")
     if not clerk_user_id:
         raise HTTPException(status_code=401, detail="Invalid Clerk token: no sub claim")
 
-    # Lookup by clerk_id
+    # Fast path: existing by clerk_id
     result = await db.execute(select(User).where(User.clerk_id == clerk_user_id))
     user = result.scalar_one_or_none()
     if user:
         return user
 
-    # Fetch from Clerk to build local record
+    # Need Clerk secret for user lookup when first seen
     if not CLERK_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Clerk secret key not configured")
+
+    # Fetch user from Clerk to populate email/name
     async with httpx.AsyncClient(timeout=5) as client:
         resp = await client.get(
             f"{CLERK_API_URL}/users/{clerk_user_id}",
@@ -117,7 +104,8 @@ async def user_with_optional_token(
     name = f"{first} {last}".strip() or email
     if not email:
         raise HTTPException(status_code=400, detail="Clerk user missing email")
-    # Existing by email (backfill clerk_id)
+
+    # Backfill existing user by email or create
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user:
@@ -127,6 +115,7 @@ async def user_with_optional_token(
             await db.commit()
             await db.refresh(user)
         return user
+
     user = User(email=email, name=name, clerk_id=clerk_user_id, plan=PlanType.FREE)
     db.add(user)
     await db.commit()
@@ -144,41 +133,38 @@ async def upload_receipt(
     """Upload a new receipt for processing."""
     # Tier-aware rate limit: per-plan uploads per minute
     await enforce_tiered_rate_limit(user, "upload", cost=1)
-    # Monthly quota enforcement (simple count of receipts created this calendar month)
+    # Trial & monthly usage tracking slice 1
     try:
-        billing = BillingService()
-        plan = getattr(user, "plan", None)
-        from app.models.enums import PlanType as _PT
-        if plan is None:
-            plan = _PT.FREE
-        # Determine month boundaries (UTC)
-        now = datetime.utcnow()
-        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        # Next month start for exclusive end
-        if now.month == 12:
-            next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
-        else:
-            next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
-        q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
-        result = await db.execute(q)
-        count = result.scalar() or 0
-        limit = billing.get_monthly_quota(plan)
-        if limit != float("inf") and count >= limit:
+        ts = TrialService()
+        changed = ts.ensure_trial(user)
+        ts.maybe_reset_monthly_counter(user)
+        # increment after successful commit of receipt (later) but pre-check quota uses existing BillingService logic
+        if changed:
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+    except Exception:
+        pass
+    # Monthly quota enforcement using in-row counter fallback to service logic
+    billing = BillingService()
+    try:
+        if await billing.is_over_quota(db, user):
+            limit = billing.get_monthly_quota(user.plan)
             try:
                 sentry_breadcrumb(
                     category="quota",
                     message="upload_receipt.quota_denied",
                     data={
-                        "plan": getattr(plan, "value", str(plan)),
+                        "plan": getattr(user.plan, "value", str(user.plan)),
                         "monthly_limit": limit,
-                        "current_count": count,
+                        "current_count": getattr(user, "monthly_receipt_count", None),
                         "route": "POST /receipts",
                     },
                     level="info",
                 )
                 sentry_set_tags({
                     "quota.exceeded": True,
-                    "quota.plan": getattr(plan, "value", str(plan)),
+                    "quota.plan": getattr(user.plan, "value", str(user.plan)),
                 })
             except Exception:
                 pass
@@ -186,11 +172,6 @@ async def upload_receipt(
     except HTTPException:
         raise
     except Exception:
-        # Fail open (never block processing) on internal errors
-        pass
-    # Dev fallback: if bypass enabled and no Authorization header was sent, ensure we still have a user object.
-    if settings.DEV_AUTH_BYPASS and (not request or not request.headers.get("Authorization")):
-        # user is already a DB instance from get_user when bypass is True; nothing extra needed
         pass
     # Check file type
     if not file.content_type or not (file.content_type.startswith("image/") or file.content_type == "application/pdf"):
@@ -221,6 +202,13 @@ async def upload_receipt(
     db.add(receipt)
     await db.commit()
     await db.refresh(receipt)
+    # Increment usage counter (best-effort) after receipt creation
+    try:
+        ts.increment_usage(user)
+        db.add(user)
+        await db.commit()
+    except Exception:
+        pass
     
     # Queue background task for processing with user_id
     task_message = extract_and_audit_receipt.send(receipt.id, user.id)
@@ -264,30 +252,20 @@ async def upload_receipts_batch(
     storage = StorageService()
     created: List[ReceiptRead] = []
 
+    ts = TrialService()
     for f in files:
         # Quota check per file (stop early if exceeded)
         try:
             billing = BillingService()
-            plan = getattr(user, "plan", None)
-            from app.models.enums import PlanType as _PT
-            if plan is None:
-                plan = _PT.FREE
-            now = datetime.utcnow()
-            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-            if now.month == 12:
-                next_start = datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
-            else:
-                next_start = datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
-            q = select(func.count(Receipt.id)).where(Receipt.owner_id == user.id, Receipt.created_at >= month_start, Receipt.created_at < next_start)
-            current_count = (await db.execute(q)).scalar() or 0
-            limit = billing.get_monthly_quota(plan)
-            if limit != float("inf") and current_count >= limit:
+            if await billing.is_over_quota(db, user):
+                limit = billing.get_monthly_quota(user.plan)
+                current_count = getattr(user, "monthly_receipt_count", None)
                 try:
                     sentry_breadcrumb(
                         category="quota",
                         message="upload_receipts_batch.quota_denied",
                         data={
-                            "plan": getattr(plan, "value", str(plan)),
+                            "plan": getattr(user.plan, "value", str(user.plan)),
                             "monthly_limit": limit,
                             "current_count": current_count,
                             "route": "POST /receipts/batch",
@@ -296,7 +274,7 @@ async def upload_receipts_batch(
                     )
                     sentry_set_tags({
                         "quota.exceeded": True,
-                        "quota.plan": getattr(plan, "value", str(plan)),
+                        "quota.plan": getattr(user.plan, "value", str(user.plan)),
                     })
                 except Exception:
                     pass
@@ -336,6 +314,13 @@ async def upload_receipts_batch(
         await db.commit()
         await db.refresh(receipt)
 
+        # Increment counter for each file (post-create)
+        try:
+            ts.increment_usage(user)
+            db.add(user)
+            await db.commit()
+        except Exception:
+            pass
         created.append(ReceiptRead.from_orm(receipt))
 
     return created
@@ -420,6 +405,8 @@ class ReceiptSummary(BaseModel):
     payment_type: str | None = None
     payment_brand: str | None = None
     payment_last4: str | None = None
+    # (NEW) include extracted_data so the frontend can fully hydrate the modal without an extra fetch
+    extracted_data: dict | None = None
 
 
 @router.get("/summary", response_model=List[ReceiptSummary])
@@ -456,12 +443,16 @@ async def list_receipts_summary(
         Receipt.extraction_progress,
         Receipt.audit_progress,
         Receipt.extracted_data,
+        # Note: we include extracted_data column so the client can render modal immediately.
     ).where(Receipt.owner_id == user.id)
     if status:
         query = query.where(Receipt.status == status)
     query = query.order_by(Receipt.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     rows = result.all()
+
+    
+
     summaries: list[ReceiptSummary] = []
     for row in rows:
         # row is Row(tuple) -> destructure; avoid shadowing filter param 'status'
@@ -536,37 +527,28 @@ async def list_receipts_summary(
                             and str(pm_source.get("card_number")).strip()[-4:]
                         )
                     )
-                    if p_type:
-                        payment_type = p_type
-                        payment_brand = str(raw_brand) if raw_brand else None
-                        payment_last4 = str(last4)[-4:] if last4 else None
+                    payment_type = p_type  # normalized brand/type
+                    payment_brand = p_type
+                    payment_last4 = last4 if last4 else None
         except Exception:
             pass
         summaries.append(
             ReceiptSummary(
                 id=rid,
                 filename=fname,
-                status=str(row_status).lower() if row_status else "unknown",
+                status=row_status,
                 created_at=created_at,
                 updated_at=updated_at,
                 extraction_progress=extraction_progress or 0,
                 audit_progress=audit_progress or 0,
-                merchant=merchant if isinstance(merchant, str) else None,
+                merchant=merchant,
                 total=total,
                 payment_type=payment_type,
                 payment_brand=payment_brand,
                 payment_last4=payment_last4,
+                extracted_data=extracted_data if isinstance(extracted_data, dict) else None,
             )
         )
-    # Cache JSON-serializable form with longer TTL to reduce load
-    try:
-        await cache_set_json(
-            cache_key,
-            [ { **s.dict() } for s in summaries ],
-            ttl=60,
-        )
-    except Exception:
-        pass
     return summaries
 
 
@@ -738,44 +720,35 @@ def _sign_download_token(receipt_id: int, exp_ts: int, secret: str) -> str:
 
 
 @router.get("/{receipt_id}/download_url")
-async def get_receipt_download_url(
+async def get_download_url(
     receipt_id: int,
-    expires_in: int = 300,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
-) -> Dict[str, Any]:
-    """Generate a short‑lived signed URL to download the original file."""
+    user: User = Depends(user_with_optional_token),
+) -> dict[str, Any]:
+    """Return a short‑lived signed URL to stream the original file via this API."""
+    # Enforce ownership
     result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
     receipt = result.scalar_one_or_none()
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-
-    # Ensure file exists before issuing a URL; avoids client hitting a broken link.
-    # For filesystem: check path. For MinIO: stat object. If backend is remote and returns transient
-    # error, treat as not-ready (409) so client retries.
+    if not receipt.file_path:
+        raise HTTPException(status_code=409, detail="File not ready")
+    # Ensure file exists, then sign local route
     storage = StorageService()
     try:
-        if getattr(storage, "backend", "filesystem") == "minio" and hasattr(storage, "_client"):
-            try:  # type: ignore[attr-defined]
-                storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
-            except Exception:
-                raise HTTPException(status_code=409, detail="Receipt file not ready")
+        if getattr(storage, "backend", "").lower() == "minio" and hasattr(storage, "_client"):
+            storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
         else:
             full_path = storage.get_full_path(receipt.file_path)
             if not full_path.exists():
-                raise HTTPException(status_code=409, detail="Receipt file not ready")
-    except HTTPException:
-        raise
+                raise FileNotFoundError
     except Exception:
-        # Unknown error; surface 409 rather than 500 to allow client retry.
-        raise HTTPException(status_code=409, detail="Receipt file not ready")
-
-    # Clamp expires_in to 1 minute .. 1 day
-    expires_in = max(60, min(expires_in, 86400))
+        raise HTTPException(status_code=409, detail="File not ready")
+    expires_in = 300
     exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
     sig = _sign_download_token(receipt.id, exp_ts, settings.SECRET_KEY)
-    query = urlencode({"exp": exp_ts, "sig": sig})
-    return {"url": f"/receipts/{receipt.id}/download?{query}", "expires_in": expires_in}
+    q = urlencode({"exp": exp_ts, "sig": sig})
+    return {"url": f"/receipts/{receipt.id}/download?{q}", "expires_in": expires_in}
 
 
 @router.get("/{receipt_id}/thumbnail_url")
@@ -783,36 +756,33 @@ async def get_receipt_thumbnail_url(
     receipt_id: int,
     expires_in: int = 300,
     db: AsyncSession = Depends(get_db_session),
-    user = Depends(get_user),
+    user: User | None = Depends(user_with_optional_token),
 ) -> Dict[str, Any]:
-    """Generate a short‑lived signed URL to download a small thumbnail image."""
+    """Generate a short‑lived signed URL to fetch a small thumbnail via this API."""
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
     result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
     receipt = result.scalar_one_or_none()
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-
-    # Ensure file exists before issuing a URL (see notes in download_url route).
+    if not receipt.file_path:
+        raise HTTPException(status_code=409, detail="Receipt file not ready")
+    # Ensure file exists, then sign local route
     storage = StorageService()
     try:
-        if getattr(storage, "backend", "filesystem") == "minio" and hasattr(storage, "_client"):
-            try:
-                storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
-            except Exception:
-                raise HTTPException(status_code=409, detail="Receipt file not ready")
+        if getattr(storage, "backend", "").lower() == "minio" and hasattr(storage, "_client"):
+            storage._client.stat_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
         else:
             full_path = storage.get_full_path(receipt.file_path)
             if not full_path.exists():
-                raise HTTPException(status_code=409, detail="Receipt file not ready")
-    except HTTPException:
-        raise
+                raise FileNotFoundError
     except Exception:
         raise HTTPException(status_code=409, detail="Receipt file not ready")
-
-    expires_in = max(60, min(expires_in, 86400))
+    expires_in = max(60, min(int(expires_in or 300), 86400))
     exp_ts = int((datetime.now(timezone.utc) + timedelta(seconds=expires_in)).timestamp())
     sig = _sign_download_token(receipt.id, exp_ts, settings.SECRET_KEY)
-    query = urlencode({"exp": exp_ts, "sig": sig})
-    return {"url": f"/receipts/{receipt.id}/thumbnail?{query}", "expires_in": expires_in, "cached": True}
+    q = urlencode({"exp": exp_ts, "sig": sig})
+    return {"url": f"/receipts/{receipt.id}/thumbnail?{q}", "expires_in": expires_in, "cached": True}
 
 
 @router.get("/{receipt_id}/download")
@@ -842,17 +812,52 @@ async def download_receipt(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    # Resolve file path and stream
     storage = StorageService()
-    full_path = storage.get_full_path(receipt.file_path)
+    # MinIO backend: stream object directly (avoid filesystem-only base_dir attribute)
+    if getattr(storage, "backend", "").lower() == "minio" and hasattr(storage, "_client"):
+        try:
+            resp = storage._client.get_object(storage.bucket, receipt.file_path)  # type: ignore[attr-defined]
+        except Exception:
+            raise HTTPException(status_code=404, detail="File not found")
+        # We must stream the body out; wrap in StreamingResponse to control close
+        from fastapi.responses import StreamingResponse
+
+        async def iter_body():  # type: ignore[no-untyped-def]
+            try:
+                while True:
+                    chunk = resp.read(8192)  # type: ignore[attr-defined]
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:  # ensure connection release
+                try:
+                    resp.close()  # type: ignore[attr-defined]
+                    resp.release_conn()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+        return StreamingResponse(
+            iter_body(),
+            media_type="application/octet-stream",
+            # Sanitize filename to avoid header injection / syntax issues; avoid backslashes and quotes
+            headers={
+                "Content-Disposition": (
+                    lambda _name: f"attachment; filename=\"{_name}\""
+                )(
+                    (receipt.filename or "receipt").replace("\\", "_").replace("\"", "")
+                )
+            },
+        )
+
+    # Filesystem backend
+    try:
+        full_path = storage.get_full_path(receipt.file_path)
+    except AttributeError:
+        # base_dir missing means misconfigured storage; surface 500 to client
+        raise HTTPException(status_code=500, detail="Storage backend misconfigured (no base_dir)")
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-
-    return FileResponse(
-        path=str(full_path),
-        filename=receipt.filename or "receipt",
-        media_type="application/octet-stream",
-    )
+    return FileResponse(path=str(full_path), filename=receipt.filename or "receipt", media_type="application/octet-stream")
 
 
 @router.get("/{receipt_id}/thumbnail")
@@ -889,7 +894,8 @@ async def download_thumbnail(
             import base64
             try:
                 raw = base64.b64decode(cached)
-                return Response(content=raw, media_type="image/jpeg")
+                print(f"[thumbnail] cache-hit id={receipt_id} bytes={len(raw)}")
+                return Response(content=raw, media_type="image/jpeg", headers={"x-thumb-stage": "cache-hit"})
             except Exception:
                 pass
     except Exception:
@@ -908,7 +914,11 @@ async def download_thumbnail(
                     await cache_set_json(cache_key, _b64.b64encode(thumb).decode(), ttl=60)
                 except Exception:
                     pass
-            return Response(content=thumb, media_type="image/jpeg")
+            print(f"[thumbnail] generated id={receipt_id} bytes={len(thumb)}")
+            return Response(content=thumb, media_type="image/jpeg", headers={
+                "x-thumb-stage": "generated",
+                "x-thumb-fallback": "0",  # explicit marker that this is NOT a placeholder
+            })
     except Exception as e:  # pragma: no cover
         print(f"[thumbnail] generation error id={receipt_id} err={e}")
 
@@ -916,13 +926,29 @@ async def download_thumbnail(
     filename_lower = (receipt.filename or "").lower()
     # If original is an image type, serve it with an appropriate media type
     if filename_lower.endswith((".jpg", ".jpeg")):
-        return Response(content=original_bytes, media_type="image/jpeg")
+        print(f"[thumbnail] original-image id={receipt_id} bytes={len(original_bytes)}")
+        return Response(content=original_bytes, media_type="image/jpeg", headers={
+            "x-thumb-stage": "original-image",
+            "x-thumb-fallback": "0",
+        })
     if filename_lower.endswith(".png"):
-        return Response(content=original_bytes, media_type="image/png")
+        print(f"[thumbnail] original-image id={receipt_id} bytes={len(original_bytes)}")
+        return Response(content=original_bytes, media_type="image/png", headers={
+            "x-thumb-stage": "original-image",
+            "x-thumb-fallback": "0",
+        })
     if filename_lower.endswith(".webp"):
-        return Response(content=original_bytes, media_type="image/webp")
+        print(f"[thumbnail] original-image id={receipt_id} bytes={len(original_bytes)}")
+        return Response(content=original_bytes, media_type="image/webp", headers={
+            "x-thumb-stage": "original-image",
+            "x-thumb-fallback": "0",
+        })
     if filename_lower.endswith(".gif"):
-        return Response(content=original_bytes, media_type="image/gif")
+        print(f"[thumbnail] original-image id={receipt_id} bytes={len(original_bytes)}")
+        return Response(content=original_bytes, media_type="image/gif", headers={
+            "x-thumb-stage": "original-image",
+            "x-thumb-fallback": "0",
+        })
 
     # PDF or unknown type: attempt to fabricate a simple placeholder JPEG so the UI has something to show
     if filename_lower.endswith(".pdf"):
@@ -950,9 +976,47 @@ async def download_thumbnail(
                         pass
                 buf = BytesIO()
                 img.save(buf, format="JPEG", quality=80)
-                return Response(content=buf.getvalue(), media_type="image/jpeg")
+                data = buf.getvalue()
+                print(f"[thumbnail] pdf-placeholder id={receipt_id} bytes={len(data)}")
+                return Response(content=data, media_type="image/jpeg", headers={"x-thumb-stage": "pdf-placeholder", "x-thumb-fallback": "pdf"})
         except Exception:
             pass
-    # Last resort: empty 204 so client can show a placeholder
-    return Response(status_code=204)
+    # Last resort: fabricate a generic placeholder (avoids endless 204 loop client-side)
+    # Attempt Pillow placeholder; if not possible, fall back to embedded 1x1 PNG (transparent)
+    try:  # pragma: no cover - best effort visual aid
+        from io import BytesIO
+        try:
+            from PIL import Image, ImageDraw  # type: ignore
+        except Exception:  # Pillow missing or no drawing support
+            Image = None  # type: ignore
+            ImageDraw = None  # type: ignore
+        if Image is not None:
+            img = Image.new("RGB", (420, 320), color=(245, 245, 245))
+            if ImageDraw is not None:
+                draw = ImageDraw.Draw(img)
+                label = (receipt.filename or "").rsplit("/", 1)[-1]
+                ext = label.split(".")[-1][:10].upper() if "." in label else ""
+                text = "NO PREVIEW" + (f"\n{ext}" if ext else "")
+                y = 120
+                for line in text.split("\n"):
+                    try:
+                        w, h = draw.textsize(line) if hasattr(draw, "textsize") else (60, 20)
+                        draw.text(((img.width - w) / 2, y), line, fill=(120, 120, 120))
+                        y += h + 6
+                    except Exception:
+                        continue
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=80)
+            data = buf.getvalue()
+            print(f"[thumbnail] generic-placeholder id={receipt_id} bytes={len(data)}")
+            return Response(content=data, media_type="image/jpeg", headers={"x-thumb-stage": "generic-placeholder", "x-thumb-fallback": "pillow"})
+    except Exception:
+        pass
+    # Base64 1x1 PNG (transparent)
+    import base64
+    tiny_png = base64.b64decode(
+        b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/af8w8sAAAAASUVORK5CYII="
+    )
+    print(f"[thumbnail] tiny-fallback id={receipt_id} bytes={len(tiny_png)}")
+    return Response(content=tiny_png, media_type="image/png", headers={"x-thumb-stage": "tiny-fallback", "x-thumb-fallback": "embedded"})
 

@@ -14,13 +14,19 @@ from enum import Enum
 
 
 class PlanType(str, Enum):
-    """Subscription tier for a user or organisation."""
+    """Subscription tier for a user or organisation.
 
-    FREE = "free"
-    PERSONAL = "personal"
-    PRO = "pro"
-    BUSINESS = "business"
-    ENTERPRISE = "enterprise"
+    NOTE: Underlying PostgreSQL ENUM 'plantype' currently stores UPPERCASE values
+    (FREE, PRO, BUSINESS, ENTERPRISE). We align application enum values to those
+    uppercase tokens to avoid implicit casting issues. A migration adds PERSONAL.
+    When serializing to clients we can downcase if desired.
+    """
+
+    FREE = "FREE"
+    PERSONAL = "PERSONAL"
+    PRO = "PRO"
+    BUSINESS = "BUSINESS"
+    ENTERPRISE = "ENTERPRISE"
 
 
 class RuleType(str, Enum):

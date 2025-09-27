@@ -229,36 +229,85 @@ async def stripe_webhook(request: Request):
                 sentry_set_tags({"stripe.subscription_status": status or "", "stripe.price_id": price_id or ""})
             except Exception:
                 pass
+            # Reconciliation across all active/trialing subscriptions to produce deterministic plan.
             try:
                 if customer:
                     async with AsyncSessionLocal() as session:
                         user = await session.scalar(select(User).where(User.stripe_customer_id == customer))
-                        if user:
-                            user.subscription_status = status
-                            if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
-                                if getattr(user, "plan", None) != PlanType.FREE:
-                                    user.plan = PlanType.FREE
-                                    logger.info(
-                                        "[stripe] downgraded user id=%s email=%s to FREE due to subscription %s",
-                                        getattr(user, "id", None), getattr(user, "email", None), sub_id,
-                                    )
-                                user.payment_state = "past_due" if status in ("unpaid",) else None
-                            elif status in ("active", "trialing") and price_id:
-                                new_plan: PlanType | None = None
-                                if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
-                                    new_plan = PlanType.PRO
-                                elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
-                                    new_plan = PlanType.BUSINESS
-                                if new_plan is not None and getattr(user, "plan", None) != new_plan:
-                                    user.plan = new_plan
-                                    logger.info(
-                                        "[stripe] set user plan from subscription event user_id=%s email=%s plan=%s sub_id=%s",
-                                        getattr(user, "id", None), getattr(user, "email", None), new_plan, sub_id,
-                                    )
-                                user.payment_state = "ok"
-                            await session.commit()
+                        if not user:
+                            # Nothing to reconcile for unknown user
+                            raise RuntimeError("no-user")
+                        # Always update latest seen subscription_status from the event's subscription
+                        user.subscription_status = status
+                        if event_type == "customer.subscription.deleted" and status in ("canceled", "unpaid"):
+                            # For a deletion event we continue with full reconciliation below; not an automatic downgrade here.
+                            pass
+
+                        # Fetch all subs and choose highest precedence active/trialing; precedence: business > pro > personal > free
+                        subs = stripe.Subscription.list(  # type: ignore
+                            customer=customer,
+                            status="all",
+                            limit=10,
+                        )
+                        data = subs.get("data", []) if isinstance(subs, dict) else []
+                        active_like = [s for s in data if (s.get("status") or "").lower() in ("active", "trialing")]
+                        if not active_like:
+                            # No active/trialing subs. We no longer auto-downgrade to FREE; retain existing plan
+                            # so trial UX or grace-period handling can decide next state. Still update payment_state
+                            # for visibility.
+                            if status in ("unpaid", "past_due"):
+                                user.payment_state = "past_due"
+                            else:
+                                user.payment_state = user.payment_state or None
+                            logger.info(
+                                "[stripe] no active subscriptions for user %s; retaining plan=%s",
+                                getattr(user, "id", None), getattr(user, "plan", None)
+                            )
+                        else:
+                            if len(active_like) > 1:
+                                try:
+                                    sentry_metric_inc("stripe.multiple_active_subscriptions")
+                                except Exception:
+                                    pass
+                            def _first_price(s):
+                                try:
+                                    its = s.get("items", {}).get("data", [])
+                                    if its:
+                                        return its[0].get("price", {}).get("id")
+                                except Exception:
+                                    return None
+                            # Map price -> plan
+                            def _plan_for_price(pid: str | None):
+                                if not pid:
+                                    return None
+                                if pid == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                                    return PlanType.PERSONAL
+                                if pid in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
+                                    return PlanType.PRO
+                                if pid in (settings.STRIPE_PRICE_BUSINESS_MONTHLY, settings.STRIPE_PRICE_TEAM_MONTHLY):
+                                    return PlanType.BUSINESS
+                                return None
+                            # Choose maximum precedence
+                            precedence = {PlanType.BUSINESS: 3, PlanType.PRO: 2, PlanType.PERSONAL: 1, PlanType.FREE: 0}
+                            effective_plan = PlanType.FREE
+                            for s in active_like:
+                                p = _plan_for_price(_first_price(s)) or PlanType.FREE
+                                if precedence[p] > precedence[effective_plan]:
+                                    effective_plan = p
+                            if getattr(user, "plan", None) != effective_plan:
+                                logger.info(
+                                    "[stripe] reconciled user plan user_id=%s email=%s -> %s (multi-sub reconciliation)",
+                                    getattr(user, "id", None), getattr(user, "email", None), effective_plan,
+                                )
+                                user.plan = effective_plan
+                            # Payment state normalization
+                            user.payment_state = "ok" if effective_plan != PlanType.FREE else None
+                        await session.commit()
+            except RuntimeError:
+                # no-user path: ignore silently
+                pass
             except Exception as db_ex:  # pragma: no cover
-                logger.exception("[stripe] failed to downgrade on subscription deletion: %s", db_ex)
+                logger.exception("[stripe] subscription reconciliation failed: %s", db_ex)
 
         # 3. Invoice paid / succeeded (recoveries) ------------------------------
         elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
@@ -289,7 +338,9 @@ async def stripe_webhook(request: Request):
                         changed = True
                     if price_id:
                         plan: PlanType | None = None
-                        if price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
+                        if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                            plan = PlanType.PERSONAL
+                        elif price_id in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
                             plan = PlanType.PRO
                         elif price_id == settings.STRIPE_PRICE_TEAM_MONTHLY:
                             plan = PlanType.BUSINESS

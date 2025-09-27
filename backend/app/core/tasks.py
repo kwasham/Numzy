@@ -721,34 +721,55 @@ def process_stripe_event(event: dict):
         ):
             status = data_object.get("status")
             customer = data_object.get("customer")
-            price_id = None
-            try:
-                items = data_object.get("items", {}).get("data", [])
-                if items:
-                    price_id = items[0].get("price", {}).get("id")
-            except Exception:
-                price_id = None
             if not customer:
                 return
             user = session.query(User).filter(User.stripe_customer_id == customer).first()
             if not user:
                 return
-            if user:
-                user.subscription_status = status
-                if event_type == "customer.subscription.deleted" or status in ("canceled", "unpaid"):
+            # Always record event subscription status (may be overwritten by reconciliation if no active subs remain)
+            user.subscription_status = status
+            try:
+                subs = stripe.Subscription.list(  # type: ignore
+                    customer=customer,
+                    status="all",
+                    limit=10,
+                )
+                data = subs.get("data", []) if isinstance(subs, dict) else []
+                active_like = [s for s in data if (s.get("status") or "").lower() in ("active", "trialing")]
+                if not active_like:
                     if getattr(user, "plan", None) != PlanType.FREE:
                         user.plan = PlanType.FREE
-                    user.payment_state = "past_due" if status in ("unpaid",) else None
-                elif status in ("active", "trialing") and price_id:
-                    new_plan = None
-                    if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
-                        new_plan = PlanType.PRO
-                    elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
-                        new_plan = PlanType.BUSINESS
-                    if new_plan is not None and getattr(user, "plan", None) != new_plan:
-                        user.plan = new_plan
-                    user.payment_state = "ok"
+                    user.payment_state = None if status not in ("unpaid",) else "past_due"
+                else:
+                    def _first_price(s):
+                        try:
+                            its = s.get("items", {}).get("data", [])
+                            if its:
+                                return its[0].get("price", {}).get("id")
+                        except Exception:
+                            return None
+                    def _plan_for_price(pid: str | None):
+                        if not pid:
+                            return None
+                        if pid == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                            return PlanType.PERSONAL
+                        if pid in (settings.STRIPE_PRICE_PRO_MONTHLY, settings.STRIPE_PRICE_PRO_YEARLY):
+                            return PlanType.PRO
+                        if pid in (settings.STRIPE_PRICE_BUSINESS_MONTHLY, settings.STRIPE_PRICE_TEAM_MONTHLY):
+                            return PlanType.BUSINESS
+                        return None
+                    precedence = {PlanType.BUSINESS: 3, PlanType.PRO: 2, PlanType.PERSONAL: 1, PlanType.FREE: 0}
+                    effective_plan = PlanType.FREE
+                    for s in active_like:
+                        p = _plan_for_price(_first_price(s)) or PlanType.FREE
+                        if precedence[p] > precedence[effective_plan]:
+                            effective_plan = p
+                    if getattr(user, "plan", None) != effective_plan:
+                        user.plan = effective_plan
+                    user.payment_state = "ok" if effective_plan != PlanType.FREE else None
                 session.commit()
+            except Exception:
+                session.rollback()
 
         elif event_type in ("invoice.payment_succeeded", "invoice.paid"):
             customer = data_object.get("customer")
@@ -773,7 +794,9 @@ def process_stripe_event(event: dict):
                 changed = True
             if price_id:
                 plan = None
-                if price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
+                if price_id == getattr(settings, "STRIPE_PRICE_PERSONAL_MONTHLY", None):
+                    plan = PlanType.PERSONAL
+                elif price_id == getattr(settings, "STRIPE_PRICE_PRO_MONTHLY", None) or price_id == getattr(settings, "STRIPE_PRICE_PRO_YEARLY", None):
                     plan = PlanType.PRO
                 elif price_id == getattr(settings, "STRIPE_PRICE_TEAM_MONTHLY", None):
                     plan = PlanType.BUSINESS

@@ -138,15 +138,14 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		if (!hydratedRef.current && summary && summary.length > 0) {
 			setReceipts((prev) => {
 				if (prev && prev.length > 0) return prev; // Already have data (race safety)
-				const mapped = summary.map((s) => ({
-					id: s.id,
-					filename: s.filename || `receipt-${s.id}`,
-					status: s.status,
-					extracted_data: (() => {
+				const mapped = summary.map((s) => {
+					// Prefer backend-provided extracted_data; fall back to constructing minimal hints.
+					const extracted = (s as any).extracted_data as Record<string, unknown> | null | undefined; // eslint-disable-line @typescript-eslint/no-explicit-any
+					const built = (() => {
+						if (extracted && typeof extracted === "object") return extracted;
 						const base: Record<string, unknown> = {};
 						if (s.merchant) base.merchant = s.merchant;
 						if (s.total != null) base.total = s.total;
-						// Inject lightweight payment hint so table can derive paymentMethod without extra fetch.
 						if (s.payment_type) {
 							base.payment_method = {
 								type: s.payment_type,
@@ -155,13 +154,19 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 							};
 						}
 						return Object.keys(base).length > 0 ? base : null;
-					})(),
-					audit_decision: null,
-					created_at: s.created_at,
-					updated_at: s.updated_at || s.created_at,
-					extraction_progress: s.extraction_progress || 0,
-					audit_progress: s.audit_progress || 0,
-				}));
+					})();
+					return {
+						id: s.id,
+						filename: s.filename || `receipt-${s.id}`,
+						status: s.status,
+						extracted_data: built,
+						audit_decision: null,
+						created_at: s.created_at,
+						updated_at: s.updated_at || s.created_at,
+						extraction_progress: s.extraction_progress || 0,
+						audit_progress: s.audit_progress || 0,
+					};
+				});
 				hydratedRef.current = true;
 				return mapped;
 			});
@@ -286,6 +291,48 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 			if (es) es.close();
 		};
 	}, [getToken]);
+
+	// Category change events (optimistic UI from table). Update in-place so derived + stats recalc.
+	React.useEffect(() => {
+		function onCategory(ev: Event) {
+			const detail = (ev as CustomEvent).detail as {
+				id?: number;
+				category?: string | null;
+				prevCategory?: string | null;
+				amount?: number;
+			};
+			if (!detail || typeof detail !== "object" || !detail.id) return;
+			setReceipts((prev) => {
+				if (!prev) return prev;
+				const idx = prev.findIndex((r) => r.id === detail.id);
+				if (idx === -1) return prev;
+				const cur = prev[idx];
+				const ed = (cur.extracted_data && typeof cur.extracted_data === "object" ? cur.extracted_data : {}) as Record<
+					string,
+					unknown
+				>;
+				const catBefore = ed.category as string | undefined;
+				if ((detail.category || undefined) === catBefore) return prev; // no change
+				const nextEd: Record<string, unknown> = { ...ed };
+				if (detail.category) nextEd.category = detail.category;
+				else delete nextEd.category;
+				const copy = [...prev];
+				copy[idx] = { ...cur, extracted_data: nextEd };
+				return copy;
+			});
+		}
+		globalThis.addEventListener("receipt:category", onCategory as EventListener);
+		function onDeleted(ev: Event) {
+			const detail = (ev as CustomEvent).detail as { id?: number };
+			if (!detail || !detail.id) return;
+			setReceipts((prev) => (prev ? prev.filter((r) => r.id !== detail.id) : prev));
+		}
+		globalThis.addEventListener("receipt:deleted", onDeleted as EventListener);
+		return () => {
+			globalThis.removeEventListener("receipt:category", onCategory as EventListener);
+			globalThis.removeEventListener("receipt:deleted", onDeleted as EventListener);
+		};
+	}, []);
 
 	// Derived rows with client-side filtering & sorting
 	const derived = React.useMemo(() => {

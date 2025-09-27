@@ -1,5 +1,5 @@
 "use client";
-import * as React from "react";
+
 import Avatar from "@mui/material/Avatar";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -24,7 +24,7 @@ export function ReceiptsStats({
 		{ key: "Operational Expenses", label: "Operational Expenses" },
 		{ key: "Travel Expenses", label: "Travel Expenses", aliases: ["Travel Specific Expenses"] },
 		{ key: "Meals and Entertainment", label: "Meals and Entertainment" },
-		{ key: "Other", label: "Other" },
+		{ key: "Uncategorized", label: "Uncategorized", aliases: ["Other"] },
 	];
 
 	const aliasMap = new Map();
@@ -35,9 +35,9 @@ export function ReceiptsStats({
 
 	const sums = new Map(CANONICAL.map((c) => [c.key, { amount: 0, count: 0 }]));
 	for (const item of Array.isArray(categories) ? categories : []) {
-		const name = String(item?.category ?? "Other").toLowerCase();
+		const name = String(item?.category ?? "Uncategorized").toLowerCase();
 		const key = aliasMap.get(name) || (name.includes("travel") ? "Travel Expenses" : aliasMap.get(name) || undefined);
-		const bucket = key && sums.has(key) ? key : "Other";
+		const bucket = key && sums.has(key) ? key : "Uncategorized";
 		const cur = sums.get(bucket);
 		cur.amount += Number(item?.amount ?? 0);
 		cur.count += Number(item?.count ?? 0);

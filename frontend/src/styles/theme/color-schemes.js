@@ -155,7 +155,7 @@ export function colorSchemes(config) {
 					light: nevada[100],
 					main: nevada[200],
 					dark: nevada[300],
-					contrastText: "var(--mui-palette-common-white)",
+					contrastText: "var(--mui-palette-common-black)",
 					activated: "rgba(var(--mui-palette-secondary-mainChannel) / var(--mui-palette-action-activatedOpacity))",
 					hovered: "rgba(var(--mui-palette-secondary-mainChannel) / var(--mui-palette-action-hoverOpacity))",
 					selected: "rgba(var(--mui-palette-secondary-mainChannel) / var(--mui-palette-action-selectedOpacity))",
