@@ -35,6 +35,7 @@ export const dashboardConfig = {
 					key: "customers",
 					title: "Customers",
 					icon: "users",
+					roles: ["admin"],
 					items: [
 						{ key: "customers", title: "List customers", href: paths.dashboard.customers.list },
 						{ key: "customers:create", title: "Create customer", href: paths.dashboard.customers.create },
@@ -45,6 +46,7 @@ export const dashboardConfig = {
 					key: "products",
 					title: "Products",
 					icon: "shopping-bag-open",
+					roles: ["admin"],
 					items: [
 						{ key: "products", title: "List products", href: paths.dashboard.products.list },
 						{ key: "products:create", title: "Create product", href: paths.dashboard.products.create },

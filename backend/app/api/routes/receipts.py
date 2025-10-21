@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 import hmac
 import hashlib
 import base64
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status, Request, Query
@@ -30,6 +31,15 @@ from app.services.cache import cache_get_json, cache_set_json
 from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
 from app.core.tasks import _publish_event  # lightweight publisher
+from app.services.receipts import (
+    create_receipt_record,
+    delete_receipt_record,
+    get_receipt_by_id,
+    get_receipt_for_user,
+    list_receipts_for_user,
+    reset_receipt_for_reprocess,
+    update_receipt_record,
+)
 from app.services.cache import (
     cache_get_json,
     cache_set_json,
@@ -46,6 +56,8 @@ from app.models.enums import PlanType
 from app.services.trial_service import TrialService
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +202,22 @@ async def upload_receipt(
     # Save file to storage
     storage = StorageService()
     file_path, original_filename = await storage.save_upload(file, user.id)
-    
-    # Create receipt record
-    receipt = Receipt(
+
+    receipt = await create_receipt_record(
+        db,
         owner_id=user.id,
         file_path=file_path,
         filename=original_filename,
         status=ReceiptStatus.PENDING,
     )
-    
-    db.add(receipt)
-    await db.commit()
-    await db.refresh(receipt)
+    logger.info(
+        "receipt.upload",
+        extra={
+            "receipt_id": receipt.id,
+            "user_id": user.id,
+            "status": getattr(receipt.status, "value", str(receipt.status)),
+        },
+    )
     # Increment usage counter (best-effort) after receipt creation
     try:
         ts.increment_usage(user)
@@ -214,10 +230,11 @@ async def upload_receipt(
     task_message = extract_and_audit_receipt.send(receipt.id, user.id)
     
     # Update receipt with task ID
-    receipt.task_id = task_message.message_id
-    db.add(receipt)
-    await db.commit()
-    await db.refresh(receipt)
+    receipt = await update_receipt_record(
+        db,
+        receipt,
+        task_id=task_message.message_id,
+    )
     
     # Invalidate summary caches (new receipt affects list) but do not await pattern deletion inline (fire & forget)
     try:
@@ -297,22 +314,29 @@ async def upload_receipts_batch(
         # Save and create receipt
         file_path, original_filename = await storage.save_upload(f, user.id)
 
-        receipt = Receipt(
+        receipt = await create_receipt_record(
+            db,
             owner_id=user.id,
             file_path=file_path,
             filename=original_filename,
             status=ReceiptStatus.PENDING,
         )
-        db.add(receipt)
-        await db.commit()
-        await db.refresh(receipt)
+        logger.info(
+            "receipt.upload_batch",
+            extra={
+                "receipt_id": receipt.id,
+                "user_id": user.id,
+                "status": getattr(receipt.status, "value", str(receipt.status)),
+            },
+        )
 
         # Queue background task
         task_message = extract_and_audit_receipt.send(receipt.id, user.id)
-        receipt.task_id = task_message.message_id
-        db.add(receipt)
-        await db.commit()
-        await db.refresh(receipt)
+        receipt = await update_receipt_record(
+            db,
+            receipt,
+            task_id=task_message.message_id,
+        )
 
         # Increment counter for each file (post-create)
         try:
@@ -336,19 +360,19 @@ async def reprocess_receipt(
     # Tier-aware rate limit: per-plan reprocess per minute
     await enforce_tiered_rate_limit(user, "reprocess", cost=1)
     # Find the receipt and ensure ownership
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    # Reset minimal fields for reprocessing
-    receipt.status = ReceiptStatus.PENDING
-    receipt.task_error = None
-    receipt.task_retry_count = 0
-    receipt.extraction_progress = 0
-    receipt.audit_progress = 0
-    await db.commit()
-    await db.refresh(receipt)
+    receipt = await reset_receipt_for_reprocess(db, receipt)
+    logger.info(
+        "receipt.reprocess.reset",
+        extra={
+            "receipt_id": receipt.id,
+            "user_id": user.id,
+            "status": getattr(receipt.status, "value", str(receipt.status)),
+        },
+    )
     try:
         _publish_event(user.id, receipt.id, "receipt.reprocess", {
             "status": str(receipt.status.value if hasattr(receipt.status, 'value') else receipt.status),
@@ -359,9 +383,11 @@ async def reprocess_receipt(
 
     # Queue background task
     task_message = extract_and_audit_receipt.send(receipt.id, user.id)
-    receipt.task_id = task_message.message_id
-    await db.commit()
-    await db.refresh(receipt)
+    receipt = await update_receipt_record(
+        db,
+        receipt,
+        task_id=task_message.message_id,
+    )
 
     # Invalidate caches for this receipt + summaries
     try:
@@ -384,10 +410,13 @@ async def list_receipts(
 
     Note: This preserves backwards compatibility but now offers pagination.
     """
-    query = select(Receipt).where(Receipt.owner_id == user.id).order_by(Receipt.created_at.desc()).offset(offset).limit(limit)
-    result = await db.execute(query)
-    receipts = result.scalars().all()
-    return receipts
+    receipts = await list_receipts_for_user(
+        db,
+        owner_id=user.id,
+        limit=limit,
+        offset=offset,
+    )
+    return [ReceiptRead.from_orm(receipt) for receipt in receipts]
 
 
 class ReceiptSummary(BaseModel):
@@ -610,18 +639,16 @@ async def get_receipt(
             return ReceiptRead(**cached)
         except Exception:
             pass
-    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
-    result = await db.execute(query)
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     # Cache minimal period (5s)
     try:
         # Increase detail cache TTL for 60 seconds to reduce backend load
-        await cache_set_json(ck, ReceiptRead.from_orm(receipt).dict(), ttl=60)
+        await cache_set_json(ck, ReceiptRead.from_orm(receipt).model_dump(), ttl=60)
     except Exception:
         pass
-    return receipt
+    return ReceiptRead.from_orm(receipt)
 
 
 @router.patch("/{receipt_id}", response_model=ReceiptRead)
@@ -632,19 +659,20 @@ async def update_receipt(
     user: User = Depends(user_with_optional_token),
 ) -> ReceiptRead:
     """Update a receipt's extracted data or audit decision."""
-    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
-    result = await db.execute(query)
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     
-    # Apply updates
     update_dict = update_data.dict(exclude_unset=True)
-    for field, value in update_dict.items():
-        setattr(receipt, field, value)
-    
-    await db.commit()
-    await db.refresh(receipt)
+    receipt = await update_receipt_record(db, receipt, **update_dict)
+    logger.info(
+        "receipt.update",
+        extra={
+            "receipt_id": receipt.id,
+            "user_id": user.id,
+            "fields": sorted(update_dict.keys()),
+        },
+    )
     # Invalidate caches
     try:
         import asyncio as _asyncio
@@ -652,7 +680,7 @@ async def update_receipt(
         _asyncio.create_task(invalidate_receipts_summary(user.id))
     except Exception:
         pass
-    return receipt
+    return ReceiptRead.from_orm(receipt)
 
 
 @router.delete("/{receipt_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -662,15 +690,19 @@ async def delete_receipt(
     user: User = Depends(user_with_optional_token),
 ):  # Remove the return type annotation
     """Delete a receipt."""
-    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
-    result = await db.execute(query)
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     
     rid = receipt.id
-    await db.delete(receipt)
-    await db.commit()
+    await delete_receipt_record(db, receipt)
+    logger.info(
+        "receipt.delete",
+        extra={
+            "receipt_id": rid,
+            "user_id": user.id,
+        },
+    )
     try:
         import asyncio as _asyncio
         _asyncio.create_task(invalidate_receipt_detail(user.id, rid))
@@ -696,9 +728,7 @@ async def get_audit_decision(
     user: User = Depends(user_with_optional_token),
 ) -> AuditResponse:
     """Get the audit decision for a receipt."""
-    query = select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id)
-    result = await db.execute(query)
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     
@@ -727,8 +757,7 @@ async def get_download_url(
 ) -> dict[str, Any]:
     """Return a short‑lived signed URL to stream the original file via this API."""
     # Enforce ownership
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     if not receipt.file_path:
@@ -761,8 +790,7 @@ async def get_receipt_thumbnail_url(
     """Generate a short‑lived signed URL to fetch a small thumbnail via this API."""
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id, Receipt.owner_id == user.id))
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     if not receipt.file_path:
@@ -807,8 +835,7 @@ async def download_receipt(
         raise HTTPException(status_code=401, detail="Invalid token")
 
     # Load receipt by id only; access is controlled by the signed token
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_by_id(db, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
@@ -881,8 +908,7 @@ async def download_thumbnail(
         raise HTTPException(status_code=401, detail="Invalid token")
 
     # Load receipt by id only; access is controlled by the signed token
-    result = await db.execute(select(Receipt).where(Receipt.id == receipt_id))
-    receipt = result.scalar_one_or_none()
+    receipt = await get_receipt_by_id(db, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
