@@ -252,3 +252,53 @@ class BackgroundJob(Base):
     
     user = relationship("User", back_populates="background_jobs")
     receipt = relationship("Receipt", back_populates="background_job")
+
+
+# -----------------------------------------------------------------------------
+# New: First-class Events and Support tables for dashboard wiring
+# -----------------------------------------------------------------------------
+
+
+class Event(Base):
+    """Generic event for activity feeds and audit logs.
+
+    Stored minimally for now; can be expanded with per-actor references later.
+    """
+
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    type = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    meta = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+
+class SupportThread(Base):
+    """Top-level support conversation thread."""
+
+    __tablename__ = "support_threads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subject = Column(String, nullable=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+    author = relationship("User")
+    messages = relationship("SupportMessage", back_populates="thread", cascade="all, delete-orphan")
+
+
+class SupportMessage(Base):
+    """Message within a support thread."""
+
+    __tablename__ = "support_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    thread_id = Column(Integer, ForeignKey("support_threads.id"), nullable=False)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
+
+    thread = relationship("SupportThread", back_populates="messages")
+    author = relationship("User")

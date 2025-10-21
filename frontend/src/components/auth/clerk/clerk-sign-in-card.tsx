@@ -48,8 +48,8 @@ export function ClerkSignInCard({ redirectTo = "/dashboard" }: ClerkSignInCardPr
 			routing="path"
 			path="/sign-in"
 			signUpUrl="/sign-up"
+			afterSignInUrl={redirectTo}
 			redirectUrl={redirectTo}
-			redirectUrlComplete={redirectTo}
 			appearance={appearance}
 		/>
 	);

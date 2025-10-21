@@ -43,5 +43,8 @@
   "chat.promptFiles": true,
   "chat.promptFilesLocations": {
     ".github/prompts": true
+  },
+  "chat.mcp.serverSampling": {
+    
   }
 }

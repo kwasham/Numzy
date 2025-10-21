@@ -49,8 +49,8 @@ services:
       - ./.env
     environment:
       PYTHONPATH: /app
-      DEV_AUTH_BYPASS: "false"
-      ENVIRONMENT: production
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       DRAMATIQ_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
       # Neon URL must be provided via .env (ALEMBIC_DATABASE_URL and/or DATABASE_URL / DATABASE_AUTHENTICATED_URL)
@@ -100,8 +100,8 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET_NAME: receipts
       STORAGE_BACKEND: minio
-      DEV_AUTH_BYPASS: "false"
-      ENVIRONMENT: production
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       # Intentionally no local fallback; Neon variables required.
     depends_on:
       - api

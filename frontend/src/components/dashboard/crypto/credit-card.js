@@ -11,12 +11,24 @@ const brandBgs = {
 const brandIcons = { mastercard: "/assets/logo-mastercard.svg", visa: "/assets/logo-visa.svg" };
 
 export function CreditCard({ card }) {
+	// Always mask PAN when rendering UI. For prototypes, prefer last4 only.
+	const maskCardNumber = React.useCallback((value) => {
+		if (!value) return "•••• •••• •••• ••••";
+		const digits = String(value).replaceAll(/\D/g, "");
+		const last4 = digits.slice(-4);
+		return `•••• •••• •••• ${last4 || "••••"}`;
+	}, []);
+
+	const brand = card?.brand === "visa" || card?.brand === "mastercard" ? card.brand : "visa";
+	const bg = brandBgs[brand] || brandBgs.visa;
+	const logo = brandIcons[brand] || brandIcons.visa;
+
 	return (
 		<Stack
 			spacing={4}
 			sx={{
 				bgcolor: "var(--mui-palette-primary-main)",
-				backgroundImage: `url("${brandBgs[card.brand]}")`,
+				backgroundImage: `url("${bg}")`,
 				backgroundPosition: "center",
 				backgroundRepeat: "no-repeat",
 				backgroundSize: "cover",
@@ -26,7 +38,7 @@ export function CreditCard({ card }) {
 		>
 			<Box sx={{ alignItems: "center", display: "flex", justifyContent: "space-between" }}>
 				<Box alt="Contactless" component="img" src="/assets/contactless.svg" sx={{ height: "auto", width: "24px" }} />
-				<Box alt={card.brand} component="img" src={brandIcons[card.brand]} sx={{ height: "auto", width: "56px" }} />
+				<Box alt={brand} component="img" src={logo} sx={{ height: "auto", width: "56px" }} />
 			</Box>
 			<Typography
 				sx={{
@@ -39,7 +51,7 @@ export function CreditCard({ card }) {
 					textFillColor: "transparent",
 				}}
 			>
-				{card.cardNumber}
+				{maskCardNumber(card.cardNumber || card.last4)}
 			</Typography>
 			<Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between" }}>
 				<div>
@@ -47,7 +59,7 @@ export function CreditCard({ card }) {
 						Card holder
 					</Typography>
 					<Typography color="white" variant="subtitle2">
-						{card.holderName}
+						{card.holderName || card.cardholderName || "Cardholder"}
 					</Typography>
 				</div>
 				<div>
@@ -55,7 +67,10 @@ export function CreditCard({ card }) {
 						Expiry date
 					</Typography>
 					<Typography color="white" variant="subtitle2">
-						{card.expiryDate}
+						{card.expiryDate ||
+							(card.exp_month && card.exp_year
+								? `${String(card.exp_month).padStart(2, "0")}/${String(card.exp_year).slice(-2)}`
+								: "MM/YY")}
 					</Typography>
 				</div>
 				<div>

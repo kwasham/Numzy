@@ -71,6 +71,110 @@ export interface UseReceiptDetailsResult {
 	previewRefreshing: boolean;
 	downloadUrl: string | null; // original/processed file URL even if no image thumbnail
 	manualRefreshPreview: () => void;
+	// Normalized view model (added) – combines raw receipt + preview into a UI friendly shape
+	detail: ReceiptDetailView | null;
+	updateCategories: (categories: string[]) => Promise<void>;
+	updatingCategories: boolean;
+	categoriesError: string | null;
+}
+
+export interface ReceiptFieldView {
+	key: string;
+	label: string;
+	value: string;
+	confidence?: number;
+	bboxId?: string;
+}
+
+export interface ReceiptBBoxView {
+	id: string;
+	field?: string; // key of associated field if any
+	x: number; // normalized 0..1
+	y: number;
+	w: number;
+	h: number;
+	confidence?: number;
+}
+
+export type ReceiptStatusNorm = "processing" | "complete" | "failed";
+
+export interface ReceiptDetailView {
+	id: string;
+	fileName: string;
+	uploadedBy: string;
+	uploadedAt: string; // ISO
+	predictionAccuracy: number; // 0..1
+	status: ReceiptStatusNorm;
+	imageUrl: string;
+	categories: string[];
+	suggestedCategories?: string[];
+	fields: ReceiptFieldView[];
+	bboxes: ReceiptBBoxView[];
+}
+
+function normalizeStatus(raw?: string): ReceiptStatusNorm {
+	const v = (raw || "").toLowerCase();
+	if (["complete", "completed", "processed"].includes(v)) return "complete";
+	if (["failed", "error"].includes(v)) return "failed";
+	return "processing";
+}
+
+function buildDetailView(
+	receipt: ReceiptLike | null,
+	previewSrc: string | null,
+	downloadUrl: string | null
+): ReceiptDetailView | null {
+	if (!receipt) return null;
+	const ed =
+		receipt.extracted_data && typeof receipt.extracted_data === "object"
+			? (receipt.extracted_data as Record<string, unknown>)
+			: {};
+	const rx = receipt as Record<string, unknown>;
+	const pick = (...keys: string[]) => {
+		for (const k of keys) {
+			const v = ed[k];
+			if (typeof v === "string" && v) return v;
+		}
+		return "";
+	};
+	const vendor = pick("vendor", "merchant", "merchant_name");
+	const total = pick("total", "amount_total", "amount");
+	const tax = pick("tax");
+	const date = pick("date", "transaction_date") || (typeof receipt.created_at === "string" ? receipt.created_at : "");
+	const fileName =
+		typeof receipt.filename === "string" && receipt.filename
+			? receipt.filename
+			: typeof rx.original_filename === "string"
+				? String(rx.original_filename)
+				: "";
+	const rootCats = Array.isArray(rx.categories) ? (rx.categories as unknown[]).map(String).slice(0, 50) : [];
+	const edCatsRaw = ed["categories"];
+	const edCats = Array.isArray(edCatsRaw) ? edCatsRaw.map(String).slice(0, 50) : [];
+	const categories = rootCats.length > 0 ? rootCats : edCats;
+	const suggestedCategories = Array.isArray(rx.suggested_categories)
+		? (rx.suggested_categories as unknown[]).map(String)
+		: undefined;
+	const fields: ReceiptFieldView[] = [
+		{ key: "vendor", label: "Vendor", value: vendor || "—" },
+		{ key: "date", label: "Date", value: date || "—" },
+		{ key: "amount", label: "Amount", value: total || "—" },
+		{ key: "tax", label: "Tax", value: tax || "—" },
+	];
+	// Placeholder bbox extraction (extend when backend provides structured boxes)
+	const bboxes: ReceiptBBoxView[] = [];
+	return {
+		id: String(receipt.id),
+		fileName,
+		uploadedBy: String(rx.user_id || rx.owner || ""),
+		uploadedAt: typeof receipt.created_at === "string" ? receipt.created_at : "",
+		predictionAccuracy: typeof rx.prediction_accuracy === "number" ? (rx.prediction_accuracy as number) : 0,
+		status: normalizeStatus(typeof receipt.status === "string" ? receipt.status : undefined),
+		imageUrl: previewSrc || downloadUrl || "/receipt-placeholder.png",
+		categories,
+		suggestedCategories,
+		fields,
+		bboxes,
+	};
 }
 
 export function useReceiptDetails({
@@ -103,6 +207,10 @@ export function useReceiptDetails({
 		refreshing: false,
 		downloadUrl: null,
 	}));
+	const [categoryState, setCategoryState] = React.useState<{ saving: boolean; error: string | null }>({
+		saving: false,
+		error: null,
+	});
 
 	// Track last receipt id to reset preview cleanly when switching quickly.
 	const lastPreviewIdRef = React.useRef<string | number | null>(null);
@@ -249,6 +357,15 @@ export function useReceiptDetails({
 						const r = await fetch(thumb, { cache: "no-store", signal: controller.signal });
 						if (controller.signal.aborted) return;
 						if (r.status === 401 || r.status === 403) break; // stop attempts
+						// A 204 from the thumb endpoint indicates "not ready yet" (custom behavior) — treat as placeholder.
+						if (r.status === 204) {
+							// If we already have a download URL and we're past the first attempt, fall back early.
+							if (chosenDownload && i >= 1) {
+								chosen = chosenDownload;
+								break;
+							}
+							continue; // retry
+						}
 						const ct = r.headers.get("content-type") || "";
 						const placeholderReason = r.headers.get("x-thumb-fallback");
 						const stage = r.headers.get("x-thumb-stage");
@@ -263,8 +380,9 @@ export function useReceiptDetails({
 								stage,
 							});
 						}
-						// Accept any image so we can show PDF placeholders or generated thumbs immediately.
-						if (r.ok && ct.startsWith("image")) {
+						// If server returns 200, attempt to use it even if content-type not declared as image yet.
+						// <img> onerror handler will schedule a retry if it fails to render.
+						if (r.ok) {
 							chosen = thumb; // use route directly; cache-bust via query later
 							break;
 						}
@@ -332,6 +450,12 @@ export function useReceiptDetails({
 				img.addEventListener("error", () => {
 					if (controller.signal.aborted) return;
 					setPreviewState((p) => ({ ...p, loading: false, refreshing: false, downloadUrl: chosenDownload }));
+					// If the thumb failed to load (likely still processing returning 204), schedule a retry cycle.
+					if (chosen === thumb && previewReloadNonce < 6) {
+						setTimeout(() => {
+							if (!controller.signal.aborted) setPreviewReloadNonce((n) => n + 1);
+						}, 1200);
+					}
 				});
 				img.src = chosen.includes("?") ? `${chosen}&cb=${Date.now()}` : `${chosen}?cb=${Date.now()}`;
 			} catch {
@@ -389,6 +513,56 @@ export function useReceiptDetails({
 		setPreviewReloadNonce((n) => n + 1);
 	}, [receiptId]);
 
+	const updateCategories = React.useCallback(
+		async (categories: string[]) => {
+			if (!receiptId) return;
+			setCategoryState({ saving: true, error: null });
+			try {
+				let token: string | null = null;
+				try {
+					token = (await getToken?.()) || null;
+				} catch {
+					/* ignore */
+				}
+				const res = await fetch(`/api/receipts/${encodeURIComponent(String(receiptId))}`, {
+					method: "PATCH",
+					headers: {
+						"Content-Type": "application/json",
+						...(token ? { Authorization: `Bearer ${token}` } : {}),
+					},
+					body: JSON.stringify({ categories }),
+					cache: "no-store",
+				});
+				if (!res.ok) {
+					throw new Error(res.status === 403 ? "Unauthorized" : `Failed (${res.status})`);
+				}
+				let updated: ReceiptLike | null = null;
+				try {
+					updated = await res.json();
+				} catch {
+					updated = null;
+				}
+				if (updated) {
+					setFullDetail(receiptId, updated);
+					setDetailState((prev) => ({ ...prev, data: updated, loading: false, refreshing: false, error: null }));
+				} else {
+					setDetailState((prev) => {
+						if (!prev.data) return prev;
+						const next = { ...prev.data, categories } as ReceiptLike;
+						setFullDetail(receiptId, next);
+						return { ...prev, data: next };
+					});
+				}
+				setCategoryState({ saving: false, error: null });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Failed to save";
+				setCategoryState({ saving: false, error: message });
+				throw error;
+			}
+		},
+		[receiptId, getToken]
+	);
+
 	// Provide preview with stable cache-busting param like original component
 	const previewSrc = React.useMemo(() => {
 		if (!previewState.src) return null;
@@ -401,6 +575,11 @@ export function useReceiptDetails({
 		return `${base}${join}rid=${encodeURIComponent(String(receiptId || ""))}`;
 	}, [previewState.src, receiptId]);
 
+	const detailView = React.useMemo(
+		() => buildDetailView(detailState.data, previewSrc, previewState.downloadUrl),
+		[detailState.data, previewSrc, previewState.downloadUrl]
+	);
+
 	return {
 		receipt: detailState.data,
 		loading: detailState.loading,
@@ -411,5 +590,9 @@ export function useReceiptDetails({
 		previewRefreshing: previewState.refreshing,
 		downloadUrl: previewState.downloadUrl,
 		manualRefreshPreview,
+		detail: detailView,
+		updateCategories,
+		updatingCategories: categoryState.saving,
+		categoriesError: categoryState.error,
 	};
 }

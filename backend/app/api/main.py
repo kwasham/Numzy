@@ -25,6 +25,9 @@ from app.api.routes.users import router as users_router
 from app.api.routes.teams import router as teams_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.events import router as events_router
+from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.support import router as support_router
+from app.api.routes.issuing import router as issuing_router
 from app.api.routes.stripe_webhooks import router as stripe_webhooks_router
 from app.api.routes.billing import router as billing_router
 from fastapi.exception_handlers import RequestValidationError
@@ -146,6 +149,9 @@ app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(events_router)
 app.include_router(stripe_webhooks_router)
 app.include_router(billing_router)
+app.include_router(dashboard_router)
+app.include_router(support_router)
+app.include_router(issuing_router)
 
 # Quietly absorb Chrome devtools /.well-known probe (prevents 404 log noise)
 @app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
@@ -181,3 +187,14 @@ async def sentry_test():
     if (settings.ENVIRONMENT or "development").lower() != "development":
         return {"ok": False, "message": "disabled in non-development env"}
     raise RuntimeError("Sentry backend test exception")
+
+
+@app.post("/debug/seed-dashboard")
+async def seed_dashboard_data():
+    """Dev-only: seed a small dataset for dashboard demos."""
+    if (settings.ENVIRONMENT or "development").lower() != "development":
+        return {"ok": False, "message": "disabled in non-development env"}
+    # Import here to avoid import cycles
+    from app.scripts.seed_dashboard_demo import main as seed_main  # type: ignore
+    await seed_main()  # type: ignore
+    return {"ok": True}

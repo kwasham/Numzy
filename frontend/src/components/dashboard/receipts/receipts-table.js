@@ -35,7 +35,6 @@ import {
 
 import { useReceiptsSelection } from "./receipts-selection-context";
 
-
 function useTokenOnce() {
 	const { getToken } = useAuth();
 	const [token, setToken] = React.useState();
@@ -99,6 +98,22 @@ function toDisplayRow(r) {
 			null;
 		if (type) paymentMethod = { type, brand: rawBrand, last4 };
 	}
+	const extractionProgressRaw = Number(r.extraction_progress);
+	const auditProgressRaw = Number(r.audit_progress);
+	const extractionProgress = Number.isFinite(extractionProgressRaw)
+		? Math.max(0, Math.min(100, extractionProgressRaw))
+		: null;
+	const auditProgress = Number.isFinite(auditProgressRaw) ? Math.max(0, Math.min(100, auditProgressRaw)) : null;
+	let progressPercent = null;
+	if (typeof extractionProgress === "number" || typeof auditProgress === "number") {
+		const parts = [];
+		if (typeof extractionProgress === "number") parts.push(extractionProgress);
+		if (typeof auditProgress === "number") parts.push(auditProgress);
+		if (parts.length > 0) {
+			const avg = parts.reduce((acc, val) => acc + val, 0) / parts.length;
+			progressPercent = Math.round(avg);
+		}
+	}
 	return {
 		id: r.id,
 		createdAt: new Date(r.created_at),
@@ -108,7 +123,9 @@ function toDisplayRow(r) {
 		currency: "USD",
 		totalAmount,
 		status: r.status,
-		extractionProgress: r.extraction_progress ?? 0,
+		extractionProgress: extractionProgress ?? 0,
+		auditProgress: auditProgress ?? 0,
+		progressPercent,
 		customer: { name: merchant, avatar: undefined, email: undefined },
 	};
 }
@@ -191,13 +208,18 @@ const columns = (token, prewarmPreview, handleCategoryChange) => [
 								)
 							: "—"}
 					</Typography>
-					{(row.status === "pending" || row.status === "processing") && (
+					{["pending", "processing"].includes((row.status || "").toLowerCase()) && (
 						<Box sx={{ mt: 0.5 }}>
 							<LinearProgress
-								variant={row.extractionProgress > 0 ? "determinate" : "indeterminate"}
-								value={row.extractionProgress || 0}
+								variant={typeof row.progressPercent === "number" ? "determinate" : "indeterminate"}
+								value={typeof row.progressPercent === "number" ? row.progressPercent : 0}
 								sx={{ height: 6, borderRadius: 3, width: 140, bgcolor: "background.default" }}
 							/>
+							{typeof row.progressPercent === "number" ? (
+								<Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+									{row.progressPercent}% complete
+								</Typography>
+							) : null}
 						</Box>
 					)}
 				</div>

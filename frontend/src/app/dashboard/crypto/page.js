@@ -1,19 +1,16 @@
-import * as React from "react";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { PlusIcon } from "@phosphor-icons/react/dist/ssr/Plus";
 
 import { appConfig } from "@/config/app";
-import { dayjs } from "@/lib/dayjs";
 import { AccountUpgrade } from "@/components/dashboard/crypto/account-upgrade";
 import { CreditCard } from "@/components/dashboard/crypto/credit-card";
 import { CurrencyConverter } from "@/components/dashboard/crypto/currency-converter";
 import { CurrentBalance } from "@/components/dashboard/crypto/current-balance";
 import { DigitalWallet } from "@/components/dashboard/crypto/digital-wallet";
-import { Transactions } from "@/components/dashboard/crypto/transactions";
+import { IssuingCardsClient } from "@/components/dashboard/crypto/issuing-cards-client";
+import { IssuingTransactionsClient } from "@/components/dashboard/crypto/issuing-transactions-client";
 
 export const metadata = { title: `Crypto | Dashboard | ${appConfig.name}` };
 
@@ -32,11 +29,7 @@ export default function Page() {
 					<Box sx={{ flex: "1 1 auto" }}>
 						<Typography variant="h4">Crypto</Typography>
 					</Box>
-					<div>
-						<Button startIcon={<PlusIcon />} variant="contained">
-							Add wallet
-						</Button>
-					</div>
+					<IssuingCardsClient variant="controls" />
 				</Stack>
 				<Grid container spacing={4}>
 					<Grid size={12}>
@@ -88,11 +81,13 @@ export default function Page() {
 								card={{
 									id: "CRD-001",
 									brand: "mastercard",
-									cardNumber: "5823 4492 2385 1102",
-									expiryDate: "05/28",
-									holderName: "Sofia Rivers",
+									last4: "1102",
+									exp_month: 5,
+									exp_year: 2028,
+									cardholderName: "Sofia Rivers",
 								}}
 							/>
+							<IssuingCardsClient variant="list" />
 						</Box>
 					</Grid>
 					<Grid
@@ -117,43 +112,8 @@ export default function Page() {
 					>
 						<CurrencyConverter />
 					</Grid>
-					<Grid
-						size={{
-							md: 8,
-							xs: 12,
-						}}
-					>
-						<Transactions
-							transactions={[
-								{
-									id: "TX-003",
-									description: "Buy BTC",
-									type: "add",
-									balance: 643,
-									currency: "BTC",
-									amount: 0.2105,
-									createdAt: dayjs().subtract(2, "day").subtract(1, "hour").subtract(32, "minute").toDate(),
-								},
-								{
-									id: "TX-002",
-									description: "Buy BTC",
-									type: "add",
-									balance: 2344,
-									currency: "BTC",
-									amount: 0.1337,
-									createdAt: dayjs().subtract(3, "day").subtract(1, "hour").subtract(43, "minute").toDate(),
-								},
-								{
-									id: "TX-001",
-									description: "Sell BTC",
-									type: "sub",
-									balance: 4805,
-									currency: "BTC",
-									amount: 0.2105,
-									createdAt: dayjs().subtract(6, "day").subtract(1, "hour").subtract(32, "minute").toDate(),
-								},
-							]}
-						/>
+					<Grid size={{ md: 8, xs: 12 }}>
+						<IssuingTransactionsClient limit={10} />
 					</Grid>
 					<Grid
 						size={{

@@ -76,6 +76,7 @@ def _publish_event(user_id: int, receipt_id: int, event_type: str, data: dict):
         "type": event_type,
         "user_id": user_id,
         "receipt_id": receipt_id,
+        "id": receipt_id,
         **data,
     }
     try:

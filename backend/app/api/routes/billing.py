@@ -30,6 +30,64 @@ except Exception as e:  # pragma: no cover
     logging.getLogger(__name__).exception("Stripe SDK not available: %s", e)
 
 
+@router.get("/usage")
+async def get_usage(db: AsyncSession = Depends(get_db), user: User = Depends(get_user)):
+    """Return simple usage quota data for the current user/org.
+
+    For now, compute monthly receipts created by this user as `receiptsUsed` and a static quota.
+    """
+    from sqlalchemy import text
+    rows = await db.execute(text(
+        """
+        SELECT COUNT(*)::int
+        FROM receipts
+        WHERE owner_id = :uid AND created_at >= date_trunc('month', NOW())
+        """
+    ), {"uid": getattr(user, "id", 0)})
+    used = int(rows.scalar() or 0)
+    # Temporary static quota by plan
+    plan = (getattr(user, "plan", None) or PlanType.FREE)
+    quota = 50 if str(plan) in {"FREE", PlanType.FREE} else 500
+    return {"receiptsUsed": used, "receiptsQuota": quota}
+
+
+@router.get("/subscriptions")
+async def list_subscriptions(db: AsyncSession = Depends(get_db), user: User = Depends(get_user)):
+    """List recent subscriptions for the user (Stripe-backed when configured).
+
+    If Stripe isn’t configured, return an empty list for the UI to fallback gracefully.
+    """
+    if stripe is None or not settings.STRIPE_API_KEY:
+        return []
+    stripe.api_key = settings.STRIPE_API_KEY  # type: ignore
+    customer_id = getattr(user, "stripe_customer_id", None)
+    if not customer_id:
+        return []
+    try:
+        subs = stripe.Subscription.list(customer=customer_id, status="all", limit=5)  # type: ignore
+        data = subs.get("data", []) if isinstance(subs, dict) else []
+        out = []
+        for s in data:
+            items = (s.get("items", {}) or {}).get("data", [])
+            price = (items[0] or {}).get("price", {}) if items else {}
+            amount = price.get("unit_amount")
+            currency = price.get("currency", "usd").upper()
+            interval = (price.get("recurring", {}) or {}).get("interval", "month")
+            out.append({
+                "id": s.get("id"),
+                "name": price.get("nickname") or price.get("id") or "Subscription",
+                "amount": amount,
+                "currency": currency,
+                "interval": interval,
+                "status": s.get("status"),
+                "logoUrl": "/assets/company-avatar-1.png",
+            })
+        return out
+    except Exception as e:  # pragma: no cover
+        logger.warning("Failed to list subscriptions: %s", e)
+        return []
+
+
 @router.post("/checkout")
 async def create_checkout_session(
     price_id: str | None = Body(None, embed=True),

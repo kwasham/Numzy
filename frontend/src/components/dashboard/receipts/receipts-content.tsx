@@ -147,6 +147,11 @@ export function ReceiptsContent({ filters, sortDir = "desc" }: ReceiptsContentPr
 
 	return (
 		<Stack spacing={4} sx={{ flex: "1 1 auto", minWidth: 0 }}>
+			<Card id="upload-receipt">
+				<Box sx={{ p: 2 }}>
+					<ReceiptUploadWidget />
+				</Box>
+			</Card>
 			{/* Stats at top (keep) */}
 			<ReceiptsStats
 				_totals={{ all: stats.countAll, completed: stats.countCompleted, failed: 0 }}
@@ -182,12 +187,6 @@ export function ReceiptsContent({ filters, sortDir = "desc" }: ReceiptsContentPr
 				renderTable={false}
 				onRowsChange={setRows}
 			/>
-			{/* Uploader lives below the table card as its own component */}
-			<Card>
-				<Box sx={{ p: 2 }}>
-					<ReceiptUploadWidget />
-				</Box>
-			</Card>
 		</Stack>
 	);
 }

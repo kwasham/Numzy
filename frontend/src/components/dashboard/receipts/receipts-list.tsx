@@ -217,6 +217,10 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 		let cancelled = false;
 		let retryTimeout: NodeJS.Timeout | null = null;
 
+		const clampProgress = (value: unknown) => {
+			if (typeof value !== "number" || Number.isNaN(value)) return null;
+			return Math.max(0, Math.min(100, Math.round(value)));
+		};
 		const handleMessage = (ev: MessageEvent) => {
 			try {
 				const payload = JSON.parse(ev.data);
@@ -228,30 +232,89 @@ export const ReceiptsList: React.FC<ReceiptsListProps> = ({
 					const idx = prev.findIndex((r) => r.id === payload.receipt_id);
 					if (idx === -1) return prev; // unknown id
 					const current = prev[idx];
-					let changed = false;
 					let next = current;
-					if (payload.status) {
-						const newStatus = String(payload.status).toLowerCase();
-						if (newStatus !== current.status) {
-							changed = true;
-							next = { ...next, status: newStatus };
+					let mutated = false;
+					const ensureNext = () => {
+						if (!mutated) {
+							next = { ...current };
+							mutated = true;
 						}
+					};
+					if (typeof payload.status === "string") {
+						const newStatus = payload.status.toLowerCase();
+						if (newStatus && newStatus !== current.status) {
+							ensureNext();
+							next.status = newStatus;
+						}
+					}
+					if (typeof payload.updated_at === "string" && payload.updated_at !== current.updated_at) {
+						ensureNext();
+						next.updated_at = payload.updated_at;
 					}
 					if (payload.progress && typeof payload.progress === "object") {
-						const ep =
-							typeof payload.progress.extraction === "number"
-								? payload.progress.extraction
-								: current.extraction_progress;
-						const ap = typeof payload.progress.audit === "number" ? payload.progress.audit : current.audit_progress;
-						if (ep !== current.extraction_progress || ap !== current.audit_progress) {
-							changed = true;
-							next = { ...next, extraction_progress: ep, audit_progress: ap };
+						const extraction = clampProgress(payload.progress.extraction);
+						const audit = clampProgress(payload.progress.audit);
+						if (extraction !== null && extraction !== current.extraction_progress) {
+							ensureNext();
+							next.extraction_progress = extraction;
+						}
+						if (audit !== null && audit !== current.audit_progress) {
+							ensureNext();
+							next.audit_progress = audit;
+						}
+					} else if (typeof payload.progress === "number") {
+						const phase = typeof payload.phase === "string" ? payload.phase.toLowerCase() : "";
+						const normalized = clampProgress(payload.progress);
+						if (normalized !== null) {
+							if (phase === "extraction" && normalized !== current.extraction_progress) {
+								ensureNext();
+								next.extraction_progress = normalized;
+							}
+							if (phase === "audit" && normalized !== current.audit_progress) {
+								ensureNext();
+								next.audit_progress = normalized;
+							}
+							if (
+								!phase &&
+								typeof payload.type === "string" &&
+								payload.type.includes("receipt.completed") &&
+								(normalized !== current.extraction_progress || normalized !== current.audit_progress)
+							) {
+								ensureNext();
+								next.extraction_progress = normalized;
+								next.audit_progress = normalized;
+							}
 						}
 					}
-					if (!changed) return prev; // no diff
+					if (typeof payload.type === "string" && payload.type === "receipt.completed") {
+						if (next.status !== "completed") {
+							ensureNext();
+							next.status = "completed";
+						}
+						if (next.extraction_progress !== 100 || next.audit_progress !== 100) {
+							ensureNext();
+							next.extraction_progress = 100;
+							next.audit_progress = 100;
+						}
+					}
+					if ("extracted_data" in payload) {
+						const incoming = payload.extracted_data as Receipt["extracted_data"];
+						if (incoming !== current.extracted_data) {
+							ensureNext();
+							next.extracted_data = incoming ?? null;
+						}
+					}
+					if ("audit_decision" in payload) {
+						const incoming = payload.audit_decision as Receipt["audit_decision"];
+						if (incoming !== current.audit_decision) {
+							ensureNext();
+							next.audit_decision = incoming ?? null;
+						}
+					}
+					if (!mutated) return prev;
 					const copy = [...prev];
 					copy[idx] = next;
-					if (payload.type === "receipt.completed") {
+					if (typeof payload.type === "string" && payload.type === "receipt.completed") {
 						toast.success(`Receipt ${next.filename || next.id} processed`);
 					}
 					return copy;
