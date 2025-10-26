@@ -39,7 +39,6 @@ import { MobileNav } from "../mobile-nav";
 import { icons } from "../nav-icons";
 import { NotificationsPopover } from "../notifications-popover";
 import { UserPopover } from "../user-popover";
-import { WorkspacesSwitch } from "../workspaces-switch";
 import { navColorStyles } from "./styles";
 
 const logoColors = {
@@ -93,9 +92,7 @@ export function MainNav({ color = "evident", items = [] }) {
 						<Box component={RouterLink} href={paths.home} sx={{ display: { xs: "none", md: "inline-block" } }}>
 							<Logo color={logoColor} height={32} width={122} />
 						</Box>
-						<Box sx={{ display: { xs: "none", md: "block" } }}>
-							<WorkspacesSwitch />
-						</Box>
+						{/* Workspace switcher removed */}
 					</Stack>
 					<Stack
 						direction="row"

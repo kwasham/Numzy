@@ -17,7 +17,6 @@ import { isNavItemActive } from "@/lib/is-nav-item-active";
 import { Logo } from "@/components/core/logo";
 
 import { icons } from "./nav-icons";
-import { WorkspacesSwitch } from "./workspaces-switch";
 
 export function MobileNav({ items = [], open, onClose }) {
 	const pathname = usePathname();
@@ -65,7 +64,6 @@ export function MobileNav({ items = [], open, onClose }) {
 						<Logo color="light" height={32} width={122} />
 					</Box>
 				</div>
-				<WorkspacesSwitch />
 			</Stack>
 			<Box component="nav" sx={{ flex: "1 1 auto", p: 2 }}>
 				{renderNavGroups({ items, onClose, pathname })}
