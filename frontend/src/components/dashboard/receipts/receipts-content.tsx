@@ -30,6 +30,7 @@ export interface ReceiptsContentProps {
 		endDate?: string;
 		category?: string;
 		subcategory?: string;
+		search?: string;
 	};
 	sortDir?: "asc" | "desc";
 }

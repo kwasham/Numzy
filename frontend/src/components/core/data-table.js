@@ -1,12 +1,12 @@
 "use client";
 
-import * as React from "react";
 import Checkbox from "@mui/material/Checkbox";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import TableSortLabel from "@mui/material/TableSortLabel";
 
 export function DataTable({
 	columns,
@@ -17,9 +17,11 @@ export function DataTable({
 	onDeselectOne,
 	onSelectOne,
 	onSelectAll,
+	onSortChange,
 	rows,
 	selectable,
 	selected,
+	sortState,
 	uniqueRowId,
 	...props
 }) {
@@ -45,19 +47,44 @@ export function DataTable({
 							/>
 						</TableCell>
 					) : null}
-					{columns.map((column) => (
-						<TableCell
-							key={column.name}
-							sx={{
-								width: column.width,
-								minWidth: column.width,
-								maxWidth: column.width,
-								...(column.align && { textAlign: column.align }),
-							}}
-						>
-							{column.hideName ? null : column.name}
-						</TableCell>
-					))}
+					{columns.map((column) => {
+						const sortable = Boolean(column.sortable);
+						const columnKey = column.sortKey ?? column.key ?? column.name;
+						const isActive = sortable && sortState?.orderBy === columnKey;
+						const direction = isActive ? (sortState?.order ?? "asc") : "asc";
+						return (
+							<TableCell
+								key={column.key ?? column.name}
+								sx={{
+									width: column.width,
+									minWidth: column.width,
+									maxWidth: column.width,
+									...(column.align && { textAlign: column.align }),
+								}}
+							>
+								{column.hideName ? null : sortable ? (
+									<TableSortLabel
+										active={isActive}
+										direction={direction}
+										hideSortIcon={!isActive}
+										onClick={() => {
+											if (!onSortChange) return;
+											const nextDirection = isActive && direction === "asc" ? "desc" : "asc";
+											onSortChange({
+												column,
+												order: nextDirection,
+												orderBy: columnKey,
+											});
+										}}
+									>
+										{column.name}
+									</TableSortLabel>
+								) : (
+									column.name
+								)}
+							</TableCell>
+						);
+					})}
 				</TableRow>
 			</TableHead>
 			<TableBody>
@@ -97,7 +124,7 @@ export function DataTable({
 								</TableCell>
 							) : null}
 							{columns.map((column) => (
-								<TableCell key={column.name} sx={{ ...(column.align && { textAlign: column.align }) }}>
+								<TableCell key={column.key ?? column.name} sx={{ ...(column.align && { textAlign: column.align }) }}>
 									{column.formatter ? column.formatter(row, index) : column.field ? row[column.field] : null}
 								</TableCell>
 							))}

@@ -6,24 +6,25 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import FormControl from "@mui/material/FormControl";
+import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
 import OutlinedInput from "@mui/material/OutlinedInput";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
-import Typography from "@mui/material/Typography";
+import Tooltip from "@mui/material/Tooltip";
+import { MagnifyingGlass } from "@phosphor-icons/react/dist/ssr/MagnifyingGlass";
+import { XCircleIcon } from "@phosphor-icons/react/dist/ssr/XCircle";
 
 import { paths } from "@/paths";
 import { FilterButton, FilterPopover, useFilterContext } from "@/components/core/filter-button";
 import { Option } from "@/components/core/option";
 
-import { useReceiptsSelection } from "./receipts-selection-context";
-
 export function ReceiptsFilters({ filters = {}, sortDir = "desc", statusCounts }) {
-	const { merchant, id, status } = filters;
+	const { merchant, id, status, search } = filters;
 
 	const router = useRouter();
-	const selection = useReceiptsSelection();
 
 	const updateSearchParams = React.useCallback(
 		(newFilters, newSortDir) => {
@@ -36,6 +37,7 @@ export function ReceiptsFilters({ filters = {}, sortDir = "desc", statusCounts }
 			if (newFilters.status) searchParams.set("status", newFilters.status);
 			if (newFilters.id) searchParams.set("id", newFilters.id);
 			if (newFilters.merchant) searchParams.set("merchant", newFilters.merchant);
+			if (newFilters.search) searchParams.set("search", newFilters.search);
 
 			router.push(`${paths.dashboard.receipts}?${searchParams.toString()}`);
 		},
@@ -74,7 +76,23 @@ export function ReceiptsFilters({ filters = {}, sortDir = "desc", statusCounts }
 		[updateSearchParams, filters]
 	);
 
-	const hasFilters = status || id || merchant;
+	const handleSearchApply = React.useCallback(
+		(value) => {
+			const trimmed = value?.trim();
+			const next = { ...filters };
+			if (trimmed) next.search = trimmed;
+			else delete next.search;
+			updateSearchParams(next, sortDir);
+		},
+		[filters, sortDir, updateSearchParams]
+	);
+
+	const hasFilters = status || id || merchant || (search && search.trim());
+	const [searchValue, setSearchValue] = React.useState(search ?? "");
+
+	React.useEffect(() => {
+		setSearchValue(search ?? "");
+	}, [search]);
 
 	const tabs = [
 		{ label: "All", value: "", count: statusCounts?.countAll ?? 0 },
@@ -102,6 +120,38 @@ export function ReceiptsFilters({ filters = {}, sortDir = "desc", statusCounts }
 			<Divider />
 			<Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap", p: 2 }}>
 				<Stack direction="row" spacing={2} sx={{ alignItems: "center", flex: "1 1 auto", flexWrap: "wrap" }}>
+					<OutlinedInput
+						fullWidth
+						placeholder="Search receipts…"
+						value={searchValue}
+						onChange={(event) => setSearchValue(event.target.value)}
+						onKeyUp={(event) => {
+							if (event.key === "Enter") handleSearchApply(event.currentTarget.value);
+						}}
+						startAdornment={
+							<InputAdornment position="start">
+								<MagnifyingGlass size={18} />
+							</InputAdornment>
+						}
+						endAdornment={
+							searchValue ? (
+								<InputAdornment position="end">
+									<Tooltip title="Clear search">
+										<IconButton
+											edge="end"
+											onClick={() => {
+												setSearchValue("");
+												handleSearchApply("");
+											}}
+											size="small"
+										>
+											<XCircleIcon size={16} />
+										</IconButton>
+									</Tooltip>
+								</InputAdornment>
+							) : null
+						}
+					/>
 					<FilterButton
 						displayValue={id}
 						label="Receipt ID"
@@ -128,16 +178,6 @@ export function ReceiptsFilters({ filters = {}, sortDir = "desc", statusCounts }
 					/>
 					{hasFilters ? <Button onClick={handleClearFilters}>Clear filters</Button> : null}
 				</Stack>
-				{selection.selectedAny ? (
-					<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
-						<Typography color="text.secondary" variant="body2">
-							{selection.selected.size} selected
-						</Typography>
-						<Button color="error" variant="contained">
-							Delete
-						</Button>
-					</Stack>
-				) : null}
 				<Select name="sort" onChange={handleSortChange} sx={{ maxWidth: "100%", width: "120px" }} value={sortDir}>
 					<Option value="desc">Newest</Option>
 					<Option value="asc">Oldest</Option>

@@ -1,5 +1,328 @@
 "use client";
 
+// import * as React from "react";
+// import RouterLink from "next/link";
+// import { useRouter } from "next/navigation";
+// import { useAuth } from "@clerk/nextjs";
+// import Accordion from "@mui/material/Accordion";
+// import AccordionDetails from "@mui/material/AccordionDetails";
+// import AccordionSummary from "@mui/material/AccordionSummary";
+// import Alert from "@mui/material/Alert";
+// import AlertTitle from "@mui/material/AlertTitle";
+// import Avatar from "@mui/material/Avatar";
+// import Box from "@mui/material/Box";
+// import Button from "@mui/material/Button";
+// import Card from "@mui/material/Card";
+// import CardContent from "@mui/material/CardContent";
+// import Chip from "@mui/material/Chip";
+// import Dialog from "@mui/material/Dialog";
+// import DialogContent from "@mui/material/DialogContent";
+// import Divider from "@mui/material/Divider";
+// import Icon from "@mui/material/Icon";
+// import IconButton from "@mui/material/IconButton";
+// import Stack from "@mui/material/Stack";
+// import Tooltip from "@mui/material/Tooltip";
+// import Typography from "@mui/material/Typography";
+// import { ArrowClockwiseIcon } from "@phosphor-icons/react/dist/ssr/ArrowClockwise";
+// import { CheckCircleIcon } from "@phosphor-icons/react/dist/ssr/CheckCircle";
+// import { DownloadSimpleIcon } from "@phosphor-icons/react/dist/ssr/DownloadSimple";
+// import { MagnifyingGlassMinus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassMinus";
+// import { MagnifyingGlassPlus } from "@phosphor-icons/react/dist/ssr/MagnifyingGlassPlus";
+// import { PencilSimpleIcon } from "@phosphor-icons/react/dist/ssr/PencilSimple";
+// import { XIcon } from "@phosphor-icons/react/dist/ssr/X";
+// import { userHasFeature } from "@shared/pricing/featureGate";
+
+// import { paths } from "@/paths";
+// import { dayjs } from "@/lib/dayjs";
+// import { parseAmount } from "@/lib/parse-amount";
+// import { useBillingStatus } from "@/hooks/use-billing-status";
+// import { useReceiptDetails } from "@/hooks/use-receipt-details";
+// import { PropertyItem } from "@/components/core/property-item";
+// import { PropertyList } from "@/components/core/property-list";
+// import { LineItemsTable } from "@/components/dashboard/order/line-items-table";
+
+// const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// function safeNum(v, def = 0) {
+// 	if (typeof v === "number") return Number.isFinite(v) ? v : def;
+// 	if (typeof v === "string") {
+// 		const trimmed = v.trim();
+// 		if (!trimmed) return def;
+// 		const n = Number(trimmed);
+// 		return Number.isFinite(n) ? n : def;
+// 	}
+// 	return def;
+// }
+
+// const STATUS_META = {
+// 	pending: {
+// 		label: "Pending",
+// 		color: "warning",
+// 		icon: () => <Icon fontSize="small">schedule</Icon>,
+// 	},
+// 	processing: {
+// 		label: "Processing",
+// 		color: "warning",
+// 		icon: () => <Icon fontSize="small">pending</Icon>,
+// 	},
+// 	completed: {
+// 		label: "Completed",
+// 		color: "success",
+// 		icon: () => <CheckCircleIcon color="var(--mui-palette-success-main)" weight="fill" />,
+// 	},
+// 	failed: {
+// 		label: "Failed",
+// 		color: "error",
+// 		icon: () => <Icon fontSize="small">error</Icon>,
+// 	},
+// 	rejected: {
+// 		label: "Rejected",
+// 		color: "error",
+// 		icon: () => <Icon fontSize="small">cancel</Icon>,
+// 	},
+// 	canceled: {
+// 		label: "Canceled",
+// 		color: "error",
+// 		icon: () => <Icon fontSize="small">cancel</Icon>,
+// 	},
+// };
+
+// function getStatusMeta(status) {
+// 	const key = (status || "").toString().trim().toLowerCase();
+// 	const normalized = key.includes(".") ? key.split(".").pop() : key;
+// 	const entry = STATUS_META[normalized];
+// 	if (!entry) return { label: normalized || "—", color: "default", Icon: null };
+// 	return { label: entry.label, color: entry.color, Icon: entry.icon || null };
+// }
+
+// export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previewSrc: prefetchedPreview }) {
+// 	const router = useRouter();
+// 	const { getToken } = useAuth();
+// 	const { status: billingStatus } = useBillingStatus();
+// 	const [downloadHref, setDownloadHref] = React.useState(null);
+// 	const [imageError, setImageError] = React.useState(false);
+// 	const [zoom, setZoom] = React.useState(1);
+// 	const [rotation, setRotation] = React.useState(0);
+
+// 	const { receipt, loading, refreshing, error } = useReceiptDetails({ open, receiptId, providedReceipt, prefetchedPreview });
+// 	const detailState = React.useMemo(() => ({ data: receipt, loading, error }), [receipt, loading, error]);
+
+// 	const handleClose = React.useCallback(() => {
+// 		router.push(paths.dashboard.receipts);
+// 	}, [router]);
+
+// 	React.useEffect(() => {
+// 		let cancelled = false;
+// 		async function run() {
+// 			if (!open || !receiptId) return;
+// 	let mathMismatch = false;
+// 	if (inferredSubtotal > 0 && total > 0) {
+// 		const expected = inferredSubtotal + taxAmount + shippingAmount + receivingAmount - discountAmount;
+// 		if (Math.abs(expected - total) > 0.02) mathMismatch = true;
+// 	}
+
+// 	const pmSource = ed.payment_method || ed.payment || ed.card || null;
+// 	let paymentMethod = null;
+// 	if (pmSource && typeof pmSource === "object") {
+// 		const rawBrand =
+// 			pmSource.brand || pmSource.type || pmSource.card_brand || pmSource.scheme || pmSource.network || "";
+// 		const norm = String(rawBrand)
+// 			.toLowerCase()
+// 			.replaceAll(/[^a-z0-9]/g, "");
+// 		const brandMap = {
+// 			visa: "visa",
+// 			mastercard: "mastercard",
+// 			mc: "mastercard",
+// 			americanexpress: "amex",
+// 			amex: "amex",
+// 			applepay: "applepay",
+// 			apple: "applepay",
+// 			googlepay: "googlepay",
+// 			google: "googlepay",
+// 		};
+// 		const type = brandMap[norm] || norm || null;
+// 		const last4 =
+// 			pmSource.last4 ||
+// 			pmSource.card_last4 ||
+// 			(pmSource.number && String(pmSource.number).slice(-4)) ||
+// 			(pmSource.card_number && String(pmSource.card_number).slice(-4)) ||
+// 			null;
+// 		if (type) {
+// 			paymentMethod = { type, brand: rawBrand, last4 };
+// 		}
+// 	}
+// 	const paymentMapping = {
+// 		mastercard: { name: "Mastercard", logo: "/assets/payment-method-1.png" },
+// 		visa: { name: "Visa", logo: "/assets/payment-method-2.png" },
+// 		amex: { name: "American Express", logo: "/assets/payment-method-3.png" },
+// 		applepay: { name: "Apple Pay", logo: "/assets/payment-method-4.png" },
+// 		googlepay: { name: "Google Pay", logo: "/assets/payment-method-5.png" },
+// 	};
+// 	const paymentDisplay = paymentMethod ? (
+// 		<Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+// 			{paymentMapping[paymentMethod.type]?.logo ? (
+// 				<Avatar sx={{ bgcolor: "var(--mui-palette-background-paper)", boxShadow: "var(--mui-shadows-8)" }}>
+// 					<Box
+// 						component="img"
+// 						src={paymentMapping[paymentMethod.type].logo}
+// 						alt={paymentMapping[paymentMethod.type].name}
+// 						sx={{ borderRadius: "50px", height: "auto", width: 35 }}
+// 					/>
+// 				</Avatar>
+// 			) : null}
+// 			<Box>
+// 				<Typography variant="body2">
+// 					{paymentMapping[paymentMethod.type]?.name || paymentMethod.brand || "Unknown"}
+// 				</Typography>
+// 				{paymentMethod.last4 ? (
+// 					<Typography color="text.secondary" variant="body2">
+// 						**** {paymentMethod.last4}
+// 					</Typography>
+// 				) : null}
+// 			</Box>
+// 		</Stack>
+// 	) : (
+// 		"—"
+// 	);
+
+// 	const statusMeta = getStatusMeta(displayedReceipt?.status);
+// 	const StatusIcon = statusMeta.Icon;
+
+// 	const handleDownload = React.useCallback(() => {
+// 		if (!downloadHref) return;
+// 		const anchor = document.createElement("a");
+// 		anchor.href = downloadHref;
+// 												<Typography variant="h4">
+// 													{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total)}
+// 												</Typography>
+// 												<Chip icon={StatusIcon ? <StatusIcon /> : null} label={statusMeta.label} color={statusMeta.color} variant="filled" />
+// 											</Stack>
+// 										</Stack>
+// 										{detailState.loading && !detailState.data ? (
+// 											<Typography variant="body2" color="text.secondary">
+// 												Loading receipt details…
+// 											</Typography>
+// 										) : null}
+// 										{detailState.error ? (
+// 											<Alert severity="error">{String(detailState.error)}</Alert>
+// 										) : null}
+// 										{(auditMathError || amountOverLimit || needsAudit) &&
+// 										userHasFeature({ planId: billingStatus?.plan }, "Audit decision engine") ? (
+// 											<Stack spacing={1}>
+// 												{auditMathError ? (
+// 													<Alert severity="warning">
+// 														<AlertTitle>Math discrepancy detected</AlertTitle>
+// 														Totals do not add up. Review subtotal, taxes, and discounts.
+// 													</Alert>
+// 												) : null}
+// 												{amountOverLimit ? (
+// 													<Alert severity="info">Amount exceeds the configured policy limit.</Alert>
+// 												) : null}
+// 												{needsAudit && !auditMathError && !amountOverLimit ? (
+// 													<Alert severity="info">Marked for audit review.</Alert>
+// 												) : null}
+// 											</Stack>
+// 										) : null}
+// 										<PropertyList divider={<Divider />} sx={{ "--PropertyItem-padding": "12px 24px" }}>
+// 											<PropertyItem name="Address" value={address ? <Typography variant="subtitle2">{address}</Typography> : "—"} />
+// 											<PropertyItem
+// 												name="Status"
+// 												value={<Chip icon={StatusIcon ? <StatusIcon /> : null} label={statusMeta.label} size="small" color={statusMeta.color} variant="outlined" />}
+// 											/>
+// 											<PropertyItem name="Payment Method" value={paymentDisplay} />
+// 											<PropertyItem name="Filename" value={displayedReceipt?.filename || "—"} />
+// 										</PropertyList>
+// 									</CardContent>
+// 								</Card>
+// 								<Accordion disableGutters sx={{ border: "1px solid var(--mui-palette-divider)", borderRadius: 1 }}>
+// 									<AccordionSummary expandIcon={<Icon>expand_more</Icon>}>
+// 										<Typography variant="subtitle2">Raw extracted data</Typography>
+// 									</AccordionSummary>
+// 									<AccordionDetails>
+// 										<Box component="pre" sx={{ m: 0, p: 2, bgcolor: "action.hover", borderRadius: 1, overflow: "auto", maxHeight: 280 }}>
+// 											{JSON.stringify(ed ?? {}, null, 2)}
+// 										</Box>
+// 									</AccordionDetails>
+// 								</Accordion>
+// 							</Stack>
+// 						</Stack>
+// 						<Card variant="outlined">
+// 							<CardContent sx={{ display: "flex", flexDirection: "column" }}>
+// 								<Stack spacing={2}>
+// 									<Typography variant="h6">Line items</Typography>
+// 									<Box sx={{ overflowX: "auto" }}>
+// 										<LineItemsTable rows={lineItems} />
+// 									</Box>
+// 									<Divider />
+// 									<Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+// 										<Stack spacing={2} sx={{ width: { xs: "100%", md: 320 } }}>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+// 												<Typography variant="body2">Subtotal</Typography>
+// 												<Typography variant="body2">
+// 													{inferredSubtotal
+// 														? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(inferredSubtotal)
+// 														: "-"}
+// 												</Typography>
+// 											</Stack>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+// 												<Typography variant="body2">Discount</Typography>
+// 												<Typography variant="body2" color={discountAmount ? "success.main" : undefined}>
+// 													{discountAmount
+// 														? `- ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(discountAmount)}`
+// 														: "-"}
+// 												</Typography>
+// 											</Stack>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+// 												<Typography variant="body2">Shipping</Typography>
+// 												<Typography variant="body2">
+// 													{shippingAmount
+// 														? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(shippingAmount)
+// 														: "-"}
+// 												</Typography>
+// 											</Stack>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+// 												<Typography variant="body2">Receiving</Typography>
+// 												<Typography variant="body2">
+// 													{receivingAmount
+// 														? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(receivingAmount)
+// 														: "-"}
+// 												</Typography>
+// 											</Stack>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between" }}>
+// 												<Typography variant="body2">Taxes</Typography>
+// 												<Typography variant="body2">
+// 													{taxAmount
+// 														? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(taxAmount)
+// 														: "-"}
+// 												</Typography>
+// 											</Stack>
+// 											<Stack direction="row" spacing={3} sx={{ justifyContent: "space-between", alignItems: "center" }}>
+// 												<Typography variant="subtitle1">Total</Typography>
+// 												<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+// 													<Typography variant="subtitle1">
+// 														{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total)}
+// 													</Typography>
+// 													{(mathMismatch || auditMathError) &&
+// 													userHasFeature({ planId: billingStatus?.plan }, "Audit decision engine") ? (
+// 														<Tooltip title="Totals do not reconcile with detected components">
+// 															<Chip color="error" size="small" label="Mismatch" />
+// 														</Tooltip>
+// 													) : null}
+// 												</Stack>
+// 											</Stack>
+// 										</Stack>
+// 									</Box>
+// 								</CardContent>
+// 							</Card>
+// 					</Stack>
+// 				</Box>
+// 			</DialogContent>
+// 		<Dialog
+// 			fullScreen
+// 			maxWidth="lg"
+// 			onClose={handleClose}
+// 			open={open}
+// 			sx={{ "& .MuiDialog-paper": { bgcolor: "background.default" } }}
 import * as React from "react";
 import RouterLink from "next/link";
 import { useRouter } from "next/navigation";
