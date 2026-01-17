@@ -381,6 +381,9 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 		loading,
 		refreshing,
 		error,
+		updateCategories,
+		updatingCategories,
+		categoriesError,
 		// image/preview removed
 	} = useReceiptDetails({ open, receiptId, providedReceipt, prefetchedPreview });
 	// Minimal: fetch a signed download URL and expose a single button to open the receipt
@@ -440,6 +443,12 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 	const ed =
 		displayedReceipt && typeof displayedReceipt.extracted_data === "object" ? displayedReceipt.extracted_data : {};
 	const merchant = (ed && (ed.merchant ?? ed.vendor ?? ed.merchant_name)) || "—";
+	const currentCategories = Array.isArray(displayedReceipt?.categories)
+		? displayedReceipt.categories.map(String).filter(Boolean)
+		: [];
+	const suggestedCategories = Array.isArray(displayedReceipt?.suggested_categories)
+		? displayedReceipt.suggested_categories.map(String).filter(Boolean)
+		: [];
 	// Address can arrive as a string, structured object, or array. Normalize to a display string.
 	function formatAddress(addr) {
 		if (!addr) return null;
@@ -736,6 +745,62 @@ export function ReceiptModal({ open, receiptId, receipt: providedReceipt, previe
 								))}
 							</PropertyList>
 						</Card>
+
+						{/* Categories */}
+						<Stack spacing={1}>
+							<Stack direction="row" spacing={3} sx={{ alignItems: "center", justifyContent: "space-between" }}>
+								<Typography variant="h6">Categories</Typography>
+								<Stack direction="row" spacing={1}>
+									<Button
+										size="small"
+										variant="outlined"
+										disabled={updatingCategories || !displayedReceipt}
+										onClick={() => updateCategories(["Uncategorized"]).catch(() => {})}
+									>
+										Set Uncategorized
+									</Button>
+								</Stack>
+							</Stack>
+							<Card sx={{ borderRadius: 1 }} variant="outlined">
+								<Box sx={{ p: 2, display: "flex", flexDirection: "column", gap: 1 }}>
+									<Typography variant="body2" color="text.secondary">
+										Current
+									</Typography>
+									<Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+										{currentCategories.length > 0 ? (
+											currentCategories.map((c) => <Chip key={`cur-${c}`} size="small" label={c} />)
+										) : (
+											<Typography variant="body2">—</Typography>
+										)}
+									</Stack>
+									{suggestedCategories.length > 0 && (
+										<>
+											<Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+												Suggested
+											</Typography>
+											<Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+												{suggestedCategories.map((s) => (
+													<Chip
+														key={`sg-${s}`}
+														variant="outlined"
+														color="secondary"
+														size="small"
+														label={s}
+														onClick={() => updateCategories([s]).catch(() => {})}
+														disabled={updatingCategories || !displayedReceipt}
+													/>
+												))}
+											</Stack>
+										</>
+									)}
+									{categoriesError ? (
+										<Typography variant="caption" color="error.main">
+											{String(categoriesError)}
+										</Typography>
+									) : null}
+								</Box>
+							</Card>
+						</Stack>
 
 						{/* Inline receipt display */}
 						<Card sx={{ borderRadius: 1 }} variant="outlined">

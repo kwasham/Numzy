@@ -13,6 +13,7 @@ import { FileDropzone } from "@/components/core/file-dropzone";
 import { Previewer } from "@/components/widgets/previewer";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const PROXY_URL = "/api/receipts"; // same-origin proxy to avoid CORS/mixed-content
 
 async function uploadOne(file, token, attempt = 1) {
 	const form = new FormData();
@@ -20,7 +21,13 @@ async function uploadOne(file, token, attempt = 1) {
 	const headers = {};
 	if (token) headers["Authorization"] = `Bearer ${token}`;
 	try {
-		const res = await fetch(`${API_URL}/receipts`, { method: "POST", body: form, headers });
+		// Prefer same-origin proxy to avoid CORS/mixed-content issues
+		const proxyUrl = token ? `${PROXY_URL}?token=${encodeURIComponent(token)}` : PROXY_URL;
+		let res = await fetch(proxyUrl, { method: "POST", body: form, headers });
+		if (!res.ok && res.status === 404) {
+			// Proxy route not available? Fallback to direct backend URL.
+			res = await fetch(`${API_URL}/receipts`, { method: "POST", body: form, headers });
+		}
 		if (!res.ok) {
 			const text = await res.text().catch(() => "");
 			throw new Error(text || `Upload failed (${res.status})`);

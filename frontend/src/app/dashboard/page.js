@@ -13,17 +13,23 @@ import { UsersIcon } from "@phosphor-icons/react/dist/ssr/Users";
 import { WarningIcon } from "@phosphor-icons/react/dist/ssr/Warning";
 
 import { appConfig } from "@/config/app";
+import { SPENDING_TREND_SEED } from "@/data/spending-trend-seed";
 import { DunningEntrypoint } from "@/components/billing/dunning-entrypoint";
 import { PlanBadge } from "@/components/billing/plan-badge";
 import { TrialBanner } from "@/components/billing/trial-banner";
 import { AppChatClient } from "@/components/dashboard/overview/app-chat-client";
 import { AppLimits } from "@/components/dashboard/overview/app-limits";
 import { AppUsage } from "@/components/dashboard/overview/app-usage";
+import { BudgetProgressCard } from "@/components/dashboard/overview/budget-progress-card";
+import { CATEGORY_COLORS, CategoryPieCard } from "@/components/dashboard/overview/category-pie-card";
 import { CheckoutReturnNotifier } from "@/components/dashboard/overview/checkout-return-notifier";
 import { EventsClient } from "@/components/dashboard/overview/events-client";
 import { HelperWidget } from "@/components/dashboard/overview/helper-widget";
+import { MonthlySpendingCard } from "@/components/dashboard/overview/monthly-spending-card";
+import { SpendingTrendChart } from "@/components/dashboard/overview/spending-trend-chart";
 import { Subscriptions } from "@/components/dashboard/overview/subscriptions";
 import { Summary } from "@/components/dashboard/overview/summary";
+import { TransactionsList } from "@/components/dashboard/overview/transactions-list";
 
 export const metadata = { title: `Overview | Dashboard | ${appConfig.name}` };
 
@@ -194,14 +200,125 @@ async function fetchSubscriptions(headers = {}) {
 	}
 }
 
+async function fetchCategorySpend(headers = {}) {
+	// Try multiple candidates to work both locally and in Docker (api service hostname)
+	const candidates = [
+		process.env.NEXT_PUBLIC_API_URL,
+		process.env.NEXT_PUBLIC_API_BASE_URL,
+		"http://localhost:8000",
+		"http://api:8000",
+	].filter(Boolean);
+	// Category aggregation can run a heavier SQL; give it a bit more headroom.
+	for (const base of candidates) {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 5000);
+		try {
+			const res = await fetch(`${base}/metrics/spend/categories?limit=6&window_days=3650`, {
+				...cacheOptions,
+				headers,
+				signal: controller.signal,
+			});
+			if (!res.ok) throw new Error(`category ${res.status}`);
+			const json = await res.json();
+			if (!json || !Array.isArray(json.items)) {
+				continue;
+			}
+			const items = json.items
+				.map((item) => ({
+					name: typeof item.name === "string" && item.name.trim().length > 0 ? item.name.trim() : "Uncategorized",
+					amount: Number(item.amount ?? item.total ?? 0) || 0,
+					count: Number.isFinite(Number(item.count)) ? Number(item.count) : undefined,
+				}))
+				.filter((item) => Number.isFinite(item.amount) && item.amount > 0);
+			const total = Number(json.total ?? 0) || items.reduce((acc, item) => acc + item.amount, 0);
+			return { total, items };
+		} catch {
+			// try next candidate base
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	return null;
+}
+
 export default async function Page() {
 	// Server prefetch only public-ish panels; auth-required panels will fetch on the client via Clerk hooks
-	const [summary, appUsage, usagePct, subscriptionsData] = await Promise.all([
+	const [summary, appUsage, usagePct, subscriptionsData, categorySpend] = await Promise.all([
 		fetchSummary(),
 		fetchAppUsage(),
 		fetchUsage(),
 		fetchSubscriptions(),
+		fetchCategorySpend(),
 	]);
+	const monthlyBudget = 5000;
+	const subscriptionExpense = subscriptionsData.reduce((acc, sub) => {
+		if (typeof sub.costs !== "string") return acc;
+		const numeric = Number.parseFloat(sub.costs.replaceAll(/[^\d.-]/g, ""));
+		return Number.isFinite(numeric) ? acc + Math.max(0, numeric) : acc;
+	}, 0);
+	const categoryFallback = [
+		{ name: "Software subscriptions", value: 1800, color: CATEGORY_COLORS[0] },
+		{ name: "Infrastructure", value: 1400, color: CATEGORY_COLORS[1] },
+		{ name: "Operations", value: 900, color: CATEGORY_COLORS[2] },
+	];
+	const fallbackTotal = categoryFallback.reduce((acc, category) => acc + category.value, 0);
+	let categoryBreakdown = categoryFallback;
+	let monthlyExpense = fallbackTotal;
+	if (categorySpend && categorySpend.items.length > 0) {
+		categoryBreakdown = categorySpend.items.map((item, index) => ({
+			name: item.name,
+			value: Math.round(item.amount * 100) / 100,
+			color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+		}));
+		monthlyExpense = categoryBreakdown.reduce((acc, category) => acc + category.value, 0);
+	} else if (subscriptionExpense > 0) {
+		const categoryWeights = [
+			{ name: "Software subscriptions", weight: 0.45 },
+			{ name: "Infrastructure", weight: 0.35 },
+			{ name: "Operations", weight: 0.2 },
+		];
+		categoryBreakdown = categoryWeights.map(({ name, weight }, index) => ({
+			name,
+			value: Math.round(subscriptionExpense * weight * 100) / 100,
+			color: CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+		}));
+		monthlyExpense = subscriptionExpense;
+	}
+	const budgetProgressData = categoryBreakdown.map((category, index) => {
+		const fallbackBudget = monthlyBudget / Math.max(1, categoryBreakdown.length);
+		const ratio = monthlyExpense > 0 ? category.value / monthlyExpense : 1 / Math.max(1, categoryBreakdown.length);
+		const projectedBudget = Math.round(monthlyBudget * ratio * 100) / 100;
+		return {
+			name: category.name,
+			spent: category.value,
+			budget: projectedBudget > 0 ? projectedBudget : fallbackBudget,
+			color: category.color ?? CATEGORY_COLORS[index % CATEGORY_COLORS.length],
+		};
+	});
+	const today = new Date();
+	const spendingTrendData = SPENDING_TREND_SEED.map(({ label, spent, budget }) => ({
+		month: label,
+		spent,
+		budget,
+	}));
+	const transactionsSample =
+		subscriptionsData.length > 0
+			? subscriptionsData.slice(0, 5).map((subscription, index) => {
+					const numeric =
+						typeof subscription.costs === "string"
+							? Number.parseFloat(subscription.costs.replaceAll(/[^\d.-]/g, ""))
+							: Number(subscription.costs ?? 0);
+					const day = new Date(today.getTime() - index * 86_400_000);
+					return {
+						id: String(subscription.id ?? index),
+						date: day.toISOString().slice(0, 10),
+						description: subscription.title ?? "Subscription charge",
+						category: subscription.billingCycle ? `${subscription.billingCycle} billing` : "Subscription",
+						amount: -Math.abs(Number.isFinite(numeric) ? numeric : 0),
+						currency: "USD",
+					};
+				})
+			: undefined;
 	const processedDiff = summary.processedPrev24h
 		? Math.round(((summary.processed24h - summary.processedPrev24h) / Math.max(1, summary.processedPrev24h)) * 100)
 		: 0;
@@ -238,121 +355,111 @@ export default async function Page() {
 					</div>
 				</Stack>
 				<Grid container spacing={4}>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<Summary
-							amount={summary.processed24h}
-							diff={Math.abs(processedDiff)}
-							icon={ListChecksIcon}
-							title="Processed (24h)"
-							trend={processedTrend}
-						/>
+					<Grid size={{ xs: 12 }}>
+						<Grid container spacing={4}>
+							<Grid size={{ xs: 12, md: 4 }}>
+								<MonthlySpendingCard budget={monthlyBudget} totalExpense={monthlyExpense} />
+							</Grid>
+							<Grid size={{ xs: 12, md: 4 }}>
+								{/* Only pass categories to the card when we have real backend data; otherwise let it self-fetch */}
+								<CategoryPieCard
+									categories={categorySpend && categorySpend.items.length > 0 ? categoryBreakdown : undefined}
+									totalLabel="Monthly total"
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, md: 4 }}>
+								<BudgetProgressCard categories={budgetProgressData} />
+							</Grid>
+						</Grid>
 					</Grid>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<Summary
-							amount={Number.isFinite(accuracyInt) ? accuracyInt : 0}
-							diff={Math.abs(accuracyDiff)}
-							icon={UsersIcon}
-							title="Avg accuracy (7d)"
-							trend={accuracyTrend}
-						/>
+					<Grid size={{ xs: 12 }}>
+						<Grid container spacing={4}>
+							<Grid size={{ xs: 12, md: 4 }}>
+								<Summary
+									amount={summary.processed24h}
+									diff={Math.abs(processedDiff)}
+									icon={ListChecksIcon}
+									title="Processed (24h)"
+									trend={processedTrend}
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, md: 4 }}>
+								<Summary
+									amount={Number.isFinite(accuracyInt) ? accuracyInt : 0}
+									diff={Math.abs(accuracyDiff)}
+									icon={UsersIcon}
+									title="Avg accuracy (7d)"
+									trend={accuracyTrend}
+								/>
+							</Grid>
+							<Grid size={{ xs: 12, md: 4 }}>
+								<Summary
+									amount={openAudits}
+									diff={0}
+									icon={WarningIcon}
+									title="Open audits"
+									trend={openAudits > 0 ? "up" : "down"}
+								/>
+							</Grid>
+						</Grid>
 					</Grid>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<Summary
-							amount={openAudits}
-							diff={0}
-							icon={WarningIcon}
-							title="Open audits"
-							trend={openAudits > 0 ? "up" : "down"}
-						/>
+					<Grid container spacing={4} size={{ xs: 12 }}>
+						<Grid size={{ xs: 12, lg: 8 }}>
+							<Stack spacing={4}>
+								<SpendingTrendChart data={spendingTrendData} />
+								<AppUsage data={appUsage} />
+								<TransactionsList transactions={transactionsSample} />
+							</Stack>
+						</Grid>
+						<Grid size={{ xs: 12, lg: 4 }}>
+							<Stack spacing={4}>
+								<Subscriptions subscriptions={subscriptionsData} />
+								<AppLimits usage={usagePct} />
+								<EventsClient limit={4} />
+								<AppChatClient limit={5} />
+							</Stack>
+						</Grid>
 					</Grid>
-					<Grid
-						size={{
-							md: 8,
-							xs: 12,
-						}}
-					>
-						<AppUsage data={appUsage} />
-					</Grid>
-					<Grid size={{ md: 4, xs: 12 }}>
-						<Subscriptions subscriptions={subscriptionsData} />
-					</Grid>
-					<Grid size={{ md: 4, xs: 12 }}>
-						<AppChatClient limit={5} />
-					</Grid>
-					<Grid size={{ md: 4, xs: 12 }}>
-						<EventsClient limit={4} />
-					</Grid>
-					<Grid size={{ md: 4, xs: 12 }}>
-						<AppLimits usage={usagePct} />
-					</Grid>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<HelperWidget
-							action={
-								<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
-									Search jobs
-								</Button>
-							}
-							description="Search for jobs that match your skills and apply to them directly."
-							icon={BriefcaseIcon}
-							label="Jobs"
-							title="Find your dream job"
-						/>
-					</Grid>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<HelperWidget
-							action={
-								<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
-									Help center
-								</Button>
-							}
-							description="Find answers to your questions and get in touch with our team."
-							icon={InfoIcon}
-							label="Help center"
-							title="Need help figuring things out?"
-						/>
-					</Grid>
-					<Grid
-						size={{
-							md: 4,
-							xs: 12,
-						}}
-					>
-						<HelperWidget
-							action={
-								<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
-									Documentation
-								</Button>
-							}
-							description="Learn how to get started with our product and make the most of it."
-							icon={FileCodeIcon}
-							label="Documentation"
-							title="Explore documentation"
-						/>
+					<Grid container spacing={4} size={{ xs: 12 }}>
+						<Grid size={{ xs: 12, md: 4 }}>
+							<HelperWidget
+								action={
+									<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
+										Search jobs
+									</Button>
+								}
+								description="Search for jobs that match your skills and apply to them directly."
+								icon={BriefcaseIcon}
+								label="Jobs"
+								title="Find your dream job"
+							/>
+						</Grid>
+						<Grid size={{ xs: 12, md: 4 }}>
+							<HelperWidget
+								action={
+									<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
+										Help center
+									</Button>
+								}
+								description="Find answers to your questions and get in touch with our team."
+								icon={InfoIcon}
+								label="Help center"
+								title="Need help figuring things out?"
+							/>
+						</Grid>
+						<Grid size={{ xs: 12, md: 4 }}>
+							<HelperWidget
+								action={
+									<Button color="secondary" endIcon={<ArrowRightIcon />} size="small">
+										Documentation
+									</Button>
+								}
+								description="Learn how to get started with our product and make the most of it."
+								icon={FileCodeIcon}
+								label="Documentation"
+								title="Explore documentation"
+							/>
+						</Grid>
 					</Grid>
 				</Grid>
 			</Stack>

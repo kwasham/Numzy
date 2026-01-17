@@ -76,6 +76,10 @@ class ReceiptDetails(BaseModel):
     total: Optional[str] = None
     handwritten_notes: List[str] = Field(default_factory=list)
     payment_method: PaymentMethod = Field(default_factory=PaymentMethod)
+    suggested_categories: List[str] = Field(
+        default_factory=list,
+        description="Model-suggested categories for this receipt (top-level, not per-item).",
+    )
 
 
 class AuditDecision(BaseModel):
@@ -154,6 +158,10 @@ class ReceiptRead(BaseModel):
     status: ReceiptStatus
     extracted_data: Optional[Dict[str, Any]] = None
     audit_decision: Optional[Dict[str, Any]] = None
+    categories: List[str] = Field(default_factory=list)
+    suggested_categories: List[str] = Field(default_factory=list)
+    categories_locked: bool = False
+    categories_updated_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     task_id: Optional[str] = None
@@ -163,6 +171,14 @@ class ReceiptRead(BaseModel):
     audit_progress: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("categories", "suggested_categories", mode="before")
+    @classmethod
+    def _coerce_lists(cls, v):  # type: ignore[override]
+        # Map None/empty strings to [] to tolerate nullable DB rows
+        if v is None or v == "":
+            return []
+        return v
 
 
 class ReceiptListResponse(BaseModel):
@@ -274,6 +290,9 @@ class ReceiptUpdate(BaseModel):
     extracted_data: Optional[Dict[str, Any]] = None
     audit_decision: Optional[Dict[str, Any]] = None
     updated_at: Optional[datetime] = None
+    categories: Optional[List[str]] = None
+    suggested_categories: Optional[List[str]] = None
+    categories_locked: Optional[bool] = None
 
     
 
@@ -290,6 +309,10 @@ class ReceiptResponse(BaseModel):
     status: ReceiptStatus
     extracted_data: Optional[Dict[str, Any]] = None
     audit_decision: Optional[Dict[str, Any]] = None
+    categories: List[str] = Field(default_factory=list)
+    suggested_categories: List[str] = Field(default_factory=list)
+    categories_locked: bool = False
+    categories_updated_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -304,6 +327,13 @@ class ReceiptResponse(BaseModel):
     audit_progress: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("categories", "suggested_categories", mode="before")
+    @classmethod
+    def _coerce_lists_resp(cls, v):  # type: ignore[override]
+        if v is None or v == "":
+            return []
+        return v
 
 
 # Add these new schemas

@@ -42,6 +42,7 @@ from app.core.config import settings
 from app.models.tables import Receipt, BackgroundJob, Evaluation, User
 from app.models.enums import ReceiptStatus, EvaluationStatus, PlanType
 from app.services.extraction_service import ExtractionService
+from app.services.category_service import normalize_categories, UNCATEGORIZED
 from app.core.observability import sentry_metric_inc, sentry_breadcrumb  # type: ignore
 
 # Optional Stripe import for billing reconciliation
@@ -88,7 +89,7 @@ def _publish_event(user_id: int, receipt_id: int, event_type: str, data: dict):
         pass
 from app.services.storage_service import load_file_from_storage, StorageService
 from app.utils.image_processing import generate_thumbnail
-from app.services.cache import cache_set_json
+from app.services.cache import cache_set_json, invalidate_receipt_detail
 
 # Update the broker configuration to be more explicit
 
@@ -464,6 +465,25 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         else:
             receipt_details = asyncio.run(extraction_service.extract(file_data, rec.filename))
         rec.extracted_data = receipt_details.model_dump()
+        # Prefer model-provided top-level categories; do NOT use heuristic fallback anymore.
+        try:
+            extracted_suggested = getattr(receipt_details, "suggested_categories", None) or []
+            suggested = normalize_categories(extracted_suggested, include_fallback=False)
+        except Exception:
+            suggested = []
+        if not suggested:
+            suggested = [UNCATEGORIZED]
+        rec.suggested_categories = suggested
+        # Update categories if not locked or empty
+        if not getattr(rec, "categories_locked", False):
+            rec.categories = suggested
+        elif not rec.categories:
+            rec.categories = suggested
+        # Stamp update time any time we touch category fields
+        try:
+            rec.categories_updated_at = datetime.utcnow()
+        except Exception:
+            pass
         # Debug: warn if extraction returned an empty structure
         try:
             if not any([
@@ -480,10 +500,24 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
         rec.extraction_progress = 100
         job.progress = 60
         session.commit()
+        # Debug: verify categories persisted as expected (helps diagnose db/env mismatches)
+        try:
+            session.refresh(rec)
+            print(
+                f"[categories][persisted] receipt_id={receipt_id} categories={getattr(rec, 'categories', None)} suggested={getattr(rec, 'suggested_categories', None)} locked={getattr(rec, 'categories_locked', None)}"
+            )
+        except Exception as _verr:
+            print(f"[categories][verify][warn] failed to refresh receipt {receipt_id}: {_verr}")
         _publish_event(job_user_id, receipt_id, "receipt.progress", {
             "phase": "extraction", "progress": rec.extraction_progress,
             "extracted_data": rec.extracted_data,
         })
+        # Invalidate receipt detail cache after extraction + category suggestion update
+        try:
+            import asyncio as _asyncio
+            _asyncio.run(invalidate_receipt_detail(job_user_id, receipt_id))
+        except Exception:
+            pass
 
         # Pre-generate and cache thumbnail (best-effort) to accelerate first client view
         try:
@@ -491,10 +525,13 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
             thumb_bytes = generate_thumbnail(file_bytes, rec.filename or "receipt")
             if thumb_bytes and len(thumb_bytes) <= 512 * 1024:
                 import base64 as _b64
-                awaitable_cache = cache_set_json  # imported async function
-                # Fire and forget: create task to not block the actor
+                # Run async cache set in a fresh loop (this actor is sync)
                 import asyncio as _asyncio
-                _asyncio.create_task(awaitable_cache(f"receipts:thumb:{receipt_id}", _b64.b64encode(thumb_bytes).decode(), ttl=120))
+                _asyncio.run(cache_set_json(
+                    f"receipts:thumb:{receipt_id}",
+                    _b64.b64encode(thumb_bytes).decode(),
+                    ttl=120,
+                ))
         except Exception:
             pass
 
@@ -611,6 +648,12 @@ def extract_and_audit_receipt(receipt_id: int, user_id: int):
             "status": str(rec.status.value if hasattr(rec.status, 'value') else rec.status),
             "duration_ms": duration_ms,
         })
+        # Invalidate detail cache on completion to ensure UI sees latest categories/audit
+        try:
+            import asyncio as _asyncio
+            _asyncio.run(invalidate_receipt_detail(job_user_id, receipt_id))
+        except Exception:
+            pass
         print(f"Successfully processed receipt {receipt_id} in {duration_ms}ms")
 
     except Exception as e:

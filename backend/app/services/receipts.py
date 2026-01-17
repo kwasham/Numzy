@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import ReceiptStatus
+from app.services.category_service import UNCATEGORIZED
 from app.models.tables import Receipt
 
 
@@ -31,7 +32,13 @@ async def create_receipt_record(
     audit_progress: int = 0,
     extracted_data: Dict[str, Any] | None = None,
     audit_decision: Dict[str, Any] | None = None,
+    categories: list[str] | None = None,
+    suggested_categories: list[str] | None = None,
+    categories_locked: bool = False,
 ) -> Receipt:
+    # Default to a visible placeholder category so the UI never shows an empty dash; worker will overwrite.
+    default_categories = categories if categories is not None else [UNCATEGORIZED]
+
     receipt = Receipt(
         owner_id=owner_id,
         file_path=file_path,
@@ -41,6 +48,9 @@ async def create_receipt_record(
         audit_progress=audit_progress,
         extracted_data=extracted_data,
         audit_decision=audit_decision,
+        categories=default_categories,
+        suggested_categories=suggested_categories,
+        categories_locked=categories_locked,
     )
     session.add(receipt)
     return await _commit_and_refresh(session, receipt)

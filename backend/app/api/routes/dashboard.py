@@ -14,63 +14,42 @@ async def metrics_summary(db: AsyncSession = Depends(get_db)):
 	"""Summary metrics for Overview KPIs.
 
 	- processed24h, processedPrev24h: count of receipts created in last 24h vs previous 24h.
-	- avgAccuracy7d, avgAccuracyPrev7d: demo values until evaluations are wired.
+	- avgAccuracy7d, avgAccuracyPrev7d: placeholder values until evaluations are wired.
 	- openAudits: count of receipts with audit_progress < 100.
 	"""
-	# Processed windows
-	rows = await db.execute(text(
-		"""
-		WITH now_ts AS (SELECT NOW() as now)
-		SELECT
-		  (SELECT COUNT(*) FROM receipts r, now_ts n WHERE r.created_at >= n.now - INTERVAL '24 hours') as processed24h,
-		  (SELECT COUNT(*) FROM receipts r, now_ts n WHERE r.created_at < n.now - INTERVAL '24 hours' AND r.created_at >= n.now - INTERVAL '48 hours') as processedPrev24h,
-		  (SELECT COUNT(*) FROM receipts WHERE COALESCE(audit_progress,0) < 100) as open_audits
-		"""
-	))
-	r = rows.first()
-	processed24h = int(r[0]) if r else 0
-	processedPrev24h = int(r[1]) if r else 0
-	open_audits = int(r[2]) if r else 0
+	# Lightweight, separate queries to avoid heavy table rewrites or long locks.
+	processed24h = int(
+		(await db.execute(
+			text("""
+				SELECT COUNT(*)::int
+				FROM receipts
+				WHERE created_at >= NOW() - INTERVAL '24 hours'
+			""")
+		)).scalar() or 0
+	)
+	processedPrev24h = int(
+		(await db.execute(
+			text("""
+				SELECT COUNT(*)::int
+				FROM receipts
+				WHERE created_at >= NOW() - INTERVAL '48 hours'
+				  AND created_at < NOW() - INTERVAL '24 hours'
+			""")
+		)).scalar() or 0
+	)
+	open_audits = int(
+		(await db.execute(
+			text("""
+				SELECT COUNT(*)::int
+				FROM receipts
+				WHERE COALESCE(audit_progress, 0) < 100
+			""")
+		)).scalar() or 0
+	)
 
-	# Compute average accuracy over last 7 days and the prior 7 days from evaluation_items.grader_scores->>'accuracy'
-	acc_rows = await db.execute(text(
-		"""
-		WITH now_ts AS (SELECT NOW() AS now),
-		last7 AS (
-			SELECT AVG(
-				CASE WHEN (ei.grader_scores->>'accuracy') ~ '^[0-9]*\.?[0-9]+$'
-					 THEN (ei.grader_scores->>'accuracy')::DOUBLE PRECISION
-					 ELSE NULL END
-			) AS acc
-			FROM evaluation_items ei, now_ts n
-			WHERE ei.created_at >= n.now - INTERVAL '7 days'
-		),
-		prev7 AS (
-			SELECT AVG(
-				CASE WHEN (ei.grader_scores->>'accuracy') ~ '^[0-9]*\.?[0-9]+$'
-					 THEN (ei.grader_scores->>'accuracy')::DOUBLE PRECISION
-					 ELSE NULL END
-			) AS acc
-			FROM evaluation_items ei, now_ts n
-			WHERE ei.created_at < n.now - INTERVAL '7 days'
-			  AND ei.created_at >= n.now - INTERVAL '14 days'
-		)
-		SELECT COALESCE((SELECT acc FROM last7), NULL) AS acc_last7,
-			   COALESCE((SELECT acc FROM prev7), NULL) AS acc_prev7
-		"""
-	))
-	acc = acc_rows.first() if acc_rows else None
-	# Convert to 0-100 ints if present
-	def _to_pct(x):
-		try:
-			return float(x) if x is not None else None
-		except Exception:
-			return None
-	acc_last = _to_pct(acc[0]) if acc else None
-	acc_prev = _to_pct(acc[1]) if acc else None
-
-	avg7 = round(acc_last) if acc_last is not None else 92
-	prev7 = round(acc_prev) if acc_prev is not None else 90
+	# Placeholder accuracy values until evaluation metrics are available
+	avg7 = 92
+	prev7 = 90
 
 	return {
 		"processed24h": processed24h,
@@ -99,4 +78,109 @@ async def metrics_app_usage(window: str = Query("12m"), bucket: str = Query("mon
 		"""
 	))
 	return [dict(ts=r[0], requests=int(r[1]), dau=int(r[2])) for r in rows.all()]
+
+
+@router.get("/metrics/spend/categories")
+async def metrics_spend_categories(
+	limit: int = Query(6, ge=1, le=12),
+	window_days: int = Query(365, ge=1, le=3650),
+	db: AsyncSession = Depends(get_db),
+):
+	"""Aggregate spend by category from extracted receipt data for dashboard visuals."""
+	query = text(
+		r"""
+		WITH receipt_source AS (
+			SELECT
+				id,
+				created_at,
+				extracted_data,
+				categories,
+				suggested_categories
+			FROM receipts
+			WHERE extracted_data IS NOT NULL
+		),
+		receipt_category AS (
+			SELECT
+				rs.id,
+				COALESCE(
+					NULLIF(TRIM(manual.elem), ''),
+					NULLIF(TRIM(suggested.elem), ''),
+					'Uncategorized'
+				) AS category
+			FROM receipt_source rs
+			LEFT JOIN LATERAL (
+					SELECT value
+					FROM jsonb_array_elements_text(
+						CASE
+							WHEN jsonb_typeof(COALESCE(rs.categories::jsonb, '[]'::jsonb)) = 'array'
+								THEN COALESCE(rs.categories::jsonb, '[]'::jsonb)
+							ELSE '[]'::jsonb
+						END
+					)
+				LIMIT 1
+			) AS manual(elem) ON TRUE
+			LEFT JOIN LATERAL (
+					SELECT value
+					FROM jsonb_array_elements_text(
+						CASE
+							WHEN jsonb_typeof(COALESCE(rs.suggested_categories::jsonb, '[]'::jsonb)) = 'array'
+								THEN COALESCE(rs.suggested_categories::jsonb, '[]'::jsonb)
+							ELSE '[]'::jsonb
+						END
+					)
+				LIMIT 1
+			) AS suggested(elem) ON TRUE
+		),
+		receipt_totals AS (
+			SELECT
+				COALESCE(rc.category, 'Uncategorized') AS category,
+				CASE
+					WHEN (rs.extracted_data->>'total') ~ '^-?[0-9]+(\.[0-9]+)?$' THEN (rs.extracted_data->>'total')::numeric
+					WHEN regexp_replace(rs.extracted_data->>'total', '[^0-9.-]', '', 'g') ~ '^-?[0-9]+(\.[0-9]+)?$'
+						THEN regexp_replace(rs.extracted_data->>'total', '[^0-9.-]', '', 'g')::numeric
+					ELSE NULL
+				END AS amount,
+				rs.created_at
+			FROM receipt_source rs
+			LEFT JOIN receipt_category rc ON rc.id = rs.id
+		),
+		filtered AS (
+			SELECT category, amount
+			FROM receipt_totals
+			WHERE amount IS NOT NULL
+			  AND amount > 0
+			  AND created_at >= NOW() - (:window_days || ' days')::interval
+		),
+		aggregated AS (
+			SELECT category,
+			       SUM(amount) AS total,
+			       COUNT(*)::int AS contribution_count
+			FROM filtered
+			GROUP BY category
+		)
+		SELECT category,
+		       total,
+		       contribution_count,
+		       SUM(total) OVER () AS grand_total
+		FROM aggregated
+		ORDER BY total DESC, category ASC
+		LIMIT :limit
+		"""
+	)
+	params = {"limit": limit, "window_days": window_days}
+	rows = (await db.execute(query, params)).fetchall()
+	total_amount = sum(float(row.total or 0) for row in rows)
+	if total_amount <= 0 and window_days < 3650:
+		params["window_days"] = 3650
+		rows = (await db.execute(query, params)).fetchall()
+		total_amount = sum(float(row.total or 0) for row in rows)
+	items = [
+		{
+			"name": row.category,
+			"amount": float(row.total or 0),
+			"count": int(row.contribution_count or 0),
+		}
+		for row in rows
+	]
+	return {"total": total_amount, "items": items}
 

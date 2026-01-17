@@ -24,6 +24,6 @@
 			}
 		]
 	},
-	"include": ["next-env.d.ts", ".next/types/**/*.ts", "**/*.ts", "**/*.tsx"],
+	"include": ["next-env.d.ts", ".next/types/**/*.ts", "**/*.ts", "**/*.tsx", "src/components/dashboard/overview/category-pie-card.tsx"],
 	"exclude": ["node_modules"]
 }

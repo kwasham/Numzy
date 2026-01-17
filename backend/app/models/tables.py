@@ -117,6 +117,10 @@ class Receipt(Base):
     status = Column(Enum(ReceiptStatus), default=ReceiptStatus.PENDING, nullable=False)
     extracted_data = Column(JSON, nullable=True)
     audit_decision = Column(JSON, nullable=True)
+    categories = Column(JSON, nullable=True)
+    suggested_categories = Column(JSON, nullable=True)
+    categories_locked = Column(Boolean, default=False, nullable=False)
+    categories_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=dt.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow, nullable=False)
 

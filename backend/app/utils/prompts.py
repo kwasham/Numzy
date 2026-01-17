@@ -44,7 +44,7 @@ def get_default_extraction_prompt() -> str:
                         {
                             description: string | null,
                             product_code: string | null,
-                            category: string | null,
+                            category: string | null,   // optional per-item category if clearly labeled
                             item_price: string | null,
                             sale_price: string | null,
                             quantity: string | null,
@@ -63,12 +63,32 @@ def get_default_extraction_prompt() -> str:
                         last4: string | null,       // last 4 digits if printed
                         cardholder: string | null,  // name on card if present
                     },
+                    suggested_categories: [string], // top-level business expense categories for the whole receipt
                 }
 
         Only provide fields you can infer from the receipt. If a field
         is missing then use null or an empty list as appropriate. Do
         not hallucinate or attempt to derive values that are not
         clearly present.
+
+        For suggested_categories, classify the entire receipt into 1–2
+        business expense categories selected from this canonical set:
+        ["Transportation", "Meals & Entertainment", "Supplies & Materials",
+         "Software & Cloud", "Office Supplies", "Marketing", "Utilities",
+         "Equipment", "Travel", "Uncategorized"].
+
+                Guidance:
+        - Base the decision on the merchant name and item descriptions.
+                - Fuel/gas receipts (e.g., merchants like Flying J, Pilot, Love's, Chevron,
+                    Shell, BP, Exxon, Mobil, Arco, 76; or items like "unleaded", "diesel",
+                    "regular", "premium", "octane") should be classified as ["Transportation"].
+                - If the merchant clearly corresponds to a gas station brand (e.g., Flying J,
+                    Pilot, Love's, Chevron, Shell, BP, Exxon, Mobil, Arco, 76), classify as
+                    ["Transportation"] even if line-item text is sparse.
+                - If line items show typical fuel patterns (price per gallon like 3.199 or 4.559,
+                    and a decimal quantity between ~1 and ~40), classify as ["Transportation"].
+        - Do not invent categories outside the list above.
+        - If you are unsure or evidence is weak, set suggested_categories to ["Uncategorized"].
         """
     ).strip()
 

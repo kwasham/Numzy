@@ -8,6 +8,7 @@ import {
 	detailCache,
 	isFresh,
 	previewCache,
+	primePartialReceipt,
 	setFullDetail,
 	setPreview,
 } from "@/components/dashboard/receipts/receipt-cache";
@@ -237,11 +238,10 @@ export function useReceiptDetails({
 	// Detail fetch effect
 	React.useEffect(() => {
 		if (!open || !receiptId) return;
-		// Provided receipt short-circuits network
+		// Seed with provided row for instant paint, but still fetch full detail in background
 		if (providedReceipt) {
-			setDetailState({ data: providedReceipt, loading: false, refreshing: false, error: null });
-			setFullDetail(providedReceipt.id, providedReceipt);
-			return; // skip normal fetch
+			setDetailState({ data: providedReceipt, loading: false, refreshing: true, error: null });
+			primePartialReceipt(providedReceipt);
 		}
 
 		if (detailAbortRef.current) detailAbortRef.current.abort();

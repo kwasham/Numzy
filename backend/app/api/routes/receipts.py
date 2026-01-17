@@ -31,6 +31,7 @@ from app.services.cache import cache_get_json, cache_set_json
 from app.utils.image_processing import generate_thumbnail
 from app.core.tasks import extract_and_audit_receipt
 from app.core.tasks import _publish_event  # lightweight publisher
+from app.services.category_service import normalize_categories, UNCATEGORIZED
 from app.services.receipts import (
     create_receipt_record,
     delete_receipt_record,
@@ -642,10 +643,9 @@ async def get_receipt(
     receipt = await get_receipt_for_user(db, owner_id=user.id, receipt_id=receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
-    # Cache minimal period (5s)
+    # Cache detail briefly (10s) to avoid stale categories after background processing
     try:
-        # Increase detail cache TTL for 60 seconds to reduce backend load
-        await cache_set_json(ck, ReceiptRead.from_orm(receipt).model_dump(), ttl=60)
+        await cache_set_json(ck, ReceiptRead.from_orm(receipt).model_dump(), ttl=10)
     except Exception:
         pass
     return ReceiptRead.from_orm(receipt)
@@ -663,7 +663,35 @@ async def update_receipt(
     if not receipt:
         raise HTTPException(status_code=404, detail="Receipt not found")
     
-    update_dict = update_data.dict(exclude_unset=True)
+    update_dict = update_data.model_dump(exclude_unset=True)
+    manual_categories = update_dict.pop("categories", None)
+    explicit_lock = update_dict.pop("categories_locked", None)
+    suggested_override = update_dict.pop("suggested_categories", None)
+
+    if manual_categories is not None:
+        if not isinstance(manual_categories, (list, tuple, set)):
+            manual_categories = [manual_categories]
+        cleaned = normalize_categories(manual_categories)
+        update_dict["categories"] = cleaned
+        update_dict["categories_locked"] = True
+        update_dict["categories_updated_at"] = datetime.utcnow()
+
+    if explicit_lock is not None and manual_categories is None:
+        lock_value = bool(explicit_lock)
+        update_dict["categories_locked"] = lock_value
+        if not lock_value:
+            fallback_source = receipt.suggested_categories or receipt.categories or [UNCATEGORIZED]
+            update_dict["categories"] = normalize_categories(fallback_source)
+            update_dict["categories_updated_at"] = datetime.utcnow()
+
+    if suggested_override is not None:
+        if not isinstance(suggested_override, (list, tuple, set)):
+            suggested_override = [suggested_override]
+        update_dict["suggested_categories"] = normalize_categories(
+            suggested_override,
+            include_fallback=False,
+        )
+
     receipt = await update_receipt_record(db, receipt, **update_dict)
     logger.info(
         "receipt.update",
